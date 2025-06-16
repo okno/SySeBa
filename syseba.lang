@@ -1,0 +1,8 @@
+LABEL;it;en
+CLOCK;Ora attuale;Current time
+SPACE_USED;Spazio usato;Used disk space
+LOG;Posizione file di LOG;Log file location
+ROOT_REQUIRED;Questo script deve essere eseguito come root;This script must be run as root
+DIRECTORY_MISSING;La directory non esiste;The directory does not exist
+SHUTDOWN;Chiusura in corso;Shutting down
+
