@@ -1,4 +1,6 @@
 # **SySeBa – Syncro Service Backup**
+![SySeBa Logo](https://github.com/okno/SySeBa/blob/main/SySeBa_Logo.webp)
+
 *A lightweight, Anti Ransomware, Real‑Time, File‑Sync & Backup daemon for Linux*
 
 ## ✨ Overview
