@@ -38,14 +38,14 @@ By integrating seamlessly with systemd and operating without requiring external 
 
 ## ⚡ Quick Start
 ```bash
-# clone
-git clone https://github.com/<your‑account>/syseba.git
-cd syseba
+# Clone
+git clone https://github.com/okno/SySeBa.git
+cd SySeBa
 
-# deps (virtualenv recommended)
+# Deps
 pip install -r requirements.txt
 
-# (optional) move to /opt
+# Move to /opt
 sudo mkdir -p /opt/syseba
 sudo cp -r . /opt/syseba
 ```
