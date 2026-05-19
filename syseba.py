@@ -193,6 +193,7 @@ def is_daemon_running():
         except (ValueError, OSError):
             pass
 
+    # Aggiorna il lockfile con il PID corrente
     with open(LOCKFILE_PATH, 'w') as lockfile:
         lockfile.write(str(os.getpid()))
 
@@ -206,18 +207,18 @@ def generate_ascii_bar(percentage):
     bar_length = 50
     filled_length = int(percentage / 100 * bar_length)
     if percentage <= 60:
-        color = "\033[92m"  
+        color = "\033[92m"  # Verde
     elif percentage <= 85:
-        color = "\033[93m" 
+        color = "\033[93m"  # Arancione
     else:
-        color = "\033[91m"  
+        color = "\033[91m"  # Rosso
 
     bar = color + "?" * filled_length + "-" * (bar_length - filled_length) + "\033[0m"
     return bar
 
 def get_process_memory_usage():
     process = psutil.Process(os.getpid())
-    return process.memory_info().rss / (1024 ** 2) 
+    return process.memory_info().rss / (1024 ** 2)  # Convert to MB
 
 def get_process_cpu_usage():
     process = psutil.Process(os.getpid())
@@ -248,9 +249,9 @@ def display_status(source, backup, log_file, stop_event, lang):
             print(f"CPU Usage: {cpu_usage:.2f}%")
             print(generate_ascii_bar(cpu_usage))
 
-            print("\033[92m")  
+            print("\033[92m")  # Colore verde
             print(f"{lang['LOG']}: {log_file}")
-            print("\033[0m")
+            print("\033[0m")  # Ripristina colore
 
             elapsed_time = time.time() - start_time
             print(f"Elapsed Time: {elapsed_time:.2f} seconds")
@@ -309,6 +310,7 @@ def main():
     observer = Observer()
     observer.schedule(event_handler, source, recursive=True)
 
+    # Lancia la sincronizzazione iniziale in un thread separato
     initial_sync_thread = threading.Thread(target=initial_sync, args=(source, backup, log_queue))
     initial_sync_thread.start()
 

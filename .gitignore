@@ -1,0 +1,5 @@
+*.lock
+*.log
+*.db
+__pycache__/
+*.py[cod]
