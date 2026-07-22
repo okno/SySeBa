@@ -9,6 +9,7 @@ Questa documentazione descrive il pacchetto locale creato per test prima di pubb
 - Motore SySeBa rifattorizzato in classi dedicate: configurazione, lock, daemon, logging, console dashboard e web server.
 - Dashboard console ridisegnata con sezioni chiare: stato, percorsi, dischi, processo, sync iniziale, contatori e ultimi eventi.
 - Web dashboard integrata senza Flask o altri framework web: usa solo la libreria standard Python.
+- Autenticazione token per API e azioni web, con header di sicurezza HTTP.
 - Endpoint API per stato completo, log, configurazione e area restore.
 - Modifica della configurazione da web con salvataggio su `syseba.conf`.
 - Navigazione dell'area restore da browser.
@@ -139,6 +140,7 @@ sudo python3 /opt/syseba/syseba.py \
   --web \
   --web-host 0.0.0.0 \
   --web-port 8765 \
+  --web-token-file /opt/syseba/syseba_web.token \
   --config /opt/syseba/syseba.conf
 ```
 
@@ -147,6 +149,22 @@ Apri:
 ```text
 http://IP_DEL_SERVER:8765
 ```
+
+La dashboard chiede un token. Puoi passarlo in tre modi:
+
+```bash
+# Opzione 1: variabile ambiente
+export SYSEBA_WEB_TOKEN='token-lungo-casuale'
+
+# Opzione 2: file token
+sudo install -m 600 /dev/null /opt/syseba/syseba_web.token
+sudo sh -c 'openssl rand -base64 32 > /opt/syseba/syseba_web.token'
+
+# Opzione 3: argomento CLI, utile solo per test
+sudo python3 /opt/syseba/syseba.py --web --web-token 'token-lungo-casuale'
+```
+
+Se non configuri un token, SySeBa ne genera uno temporaneo all'avvio e lo stampa su stdout/journal.
 
 Per uso solo locale:
 
@@ -163,6 +181,7 @@ python3 /opt/syseba/syseba.py \
   --web-only \
   --web-host 0.0.0.0 \
   --web-port 8765 \
+  --web-token-file /opt/syseba/syseba_web.token \
   --config /opt/syseba/syseba.conf
 ```
 
@@ -173,7 +192,7 @@ Nota: le modifiche salvate da web richiedono il riavvio del watcher per essere a
 Creazione automatica:
 
 ```bash
-sudo python3 /opt/syseba/syseba.py --create-daemon --web --web-host 0.0.0.0 --web-port 8765
+sudo python3 /opt/syseba/syseba.py --create-daemon --web --web-host 0.0.0.0 --web-port 8765 --web-token-file /opt/syseba/syseba_web.token
 sudo systemctl start syseba
 sudo systemctl status syseba
 ```
@@ -189,7 +208,7 @@ sudo journalctl -u syseba -f
 Il servizio generato usa:
 
 ```text
-/usr/bin/python3 /opt/syseba/syseba.py --silent --web --web-host 0.0.0.0 --web-port 8765
+/usr/bin/python3 /opt/syseba/syseba.py --silent --web --web-host 0.0.0.0 --web-port 8765 --web-token-file /opt/syseba/syseba_web.token
 ```
 
 ## Dashboard web
@@ -356,13 +375,22 @@ restore: /storage/6TB/RESTORE/docs/a.txt
 
 ## Sicurezza web
 
-La dashboard web non implementa autenticazione. Per usarla in sicurezza:
+La dashboard web richiede un token per tutte le API e per le azioni amministrative. Per usarla in sicurezza:
 
 - esponila solo su LAN fidata;
 - preferisci `--web-host 127.0.0.1` se la usi via SSH tunnel;
 - se la pubblichi in rete, mettila dietro reverse proxy con HTTPS e autenticazione;
 - limita firewall e IP autorizzati;
 - ricorda che da web si puo modificare configurazione e ripristinare file.
+- usa token lunghi e casuali, leggibili solo dall'utente che esegue SySeBa.
+
+Puoi disattivare l'autenticazione solo in laboratorio:
+
+```bash
+python3 syseba.py --web --no-web-auth
+```
+
+Non usare `--no-web-auth` su una rete condivisa.
 
 Esempio tunnel SSH:
 
@@ -513,7 +541,7 @@ No. SySeBa usa SQLite locale.
 
 ### Posso esporre la dashboard su Internet?
 
-Non direttamente. La dashboard non ha login integrato. Usa VPN, SSH tunnel o reverse proxy con autenticazione.
+Non direttamente. Anche con token integrato, e meglio usare VPN, SSH tunnel o reverse proxy con HTTPS e autenticazione aggiuntiva.
 
 ### Cosa succede se il backup contiene gia il file?
 

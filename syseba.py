@@ -1,9 +1,12 @@
 import argparse
 import configparser
+import hmac
 import json
 import logging
 import mimetypes
 import os
+import secrets
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -17,7 +20,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty, Queue
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 try:
     import psutil
@@ -39,6 +42,8 @@ DEFAULT_DB_PATH = "/opt/syseba/syseba_logs.db"
 DEFAULT_LANG_FILE = "/opt/syseba/syseba.lang"
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8765
+DEFAULT_WEB_TOKEN_FILE = "/opt/syseba/syseba_web.token"
+MAX_JSON_BODY = 64 * 1024
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -175,6 +180,27 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
     return labels
 
 
+def load_web_token(web_token=None, web_token_file=None, no_web_auth=False):
+    if no_web_auth:
+        return None, "disabled"
+
+    if web_token:
+        return web_token.strip(), "argument"
+
+    env_token = os.environ.get("SYSEBA_WEB_TOKEN", "").strip()
+    if env_token:
+        return env_token, "environment"
+
+    token_file = web_token_file or os.environ.get("SYSEBA_WEB_TOKEN_FILE", "").strip()
+    if token_file and os.path.exists(token_file):
+        with open(token_file, "r", encoding="utf-8") as token_handle:
+            token = token_handle.readline().strip()
+        if token:
+            return token, "file"
+
+    return secrets.token_urlsafe(32), "generated"
+
+
 def ensure_dependencies():
     missing = []
     if psutil is None:
@@ -238,13 +264,35 @@ def safe_join(base, relative_path):
     if normalized in ("", "."):
         candidate = base_abs
     else:
-        if normalized.startswith(".."):
-            raise ValueError("Invalid path.")
         candidate = os.path.abspath(os.path.join(base_abs, normalized))
 
     if os.path.commonpath([base_abs, candidate]) != base_abs:
         raise ValueError("Invalid path.")
+    if not is_inside_base(base_abs, nearest_existing_parent(candidate)):
+        raise ValueError("Invalid path.")
     return candidate
+
+
+def nearest_existing_parent(path):
+    current = os.path.abspath(path)
+    while not os.path.exists(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return current
+
+
+def is_inside_base(base, path):
+    base_abs = os.path.realpath(os.path.abspath(base))
+    path_abs = os.path.realpath(os.path.abspath(path))
+    return os.path.commonpath([base_abs, path_abs]) == base_abs
+
+
+def safe_download_name(path):
+    name = os.path.basename(path).replace("\\", "_").replace("/", "_")
+    name = name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+    return name or "download"
 
 
 def relative_to_base(base, path):
@@ -373,8 +421,7 @@ class SySeBaDaemon:
             raise RuntimeError(f"SySeBa is already running with PID {pid}.")
 
         self.initialize_database()
-        self.log_thread = threading.Thread(target=self.log_writer, name="syseba-log-writer", daemon=True)
-        self.log_thread.start()
+        self.start_log_writer()
 
         for index in range(self.config.threads):
             worker = threading.Thread(target=self.worker_loop, name=f"syseba-worker-{index + 1}", daemon=True)
@@ -396,8 +443,15 @@ class SySeBaDaemon:
         self.web_only = True
         self.prepare_log_path()
         self.initialize_database(allow_failure=True)
+        self.start_log_writer()
         self.running = False
         self.emit("INFO", "Web dashboard started in web-only mode.", "WEB", self.config.config_path)
+
+    def start_log_writer(self):
+        if self.log_thread is not None and self.log_thread.is_alive():
+            return
+        self.log_thread = threading.Thread(target=self.log_writer, name="syseba-log-writer", daemon=True)
+        self.log_thread.start()
 
     def prepare_paths(self):
         if not os.path.exists(self.config.source):
@@ -412,16 +466,20 @@ class SySeBaDaemon:
             os.makedirs(log_dir, exist_ok=True)
 
     def initialize_database(self, allow_failure=False):
+        connection = None
         try:
             db_dir = os.path.dirname(self.db_path)
             if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
-            with sqlite3.connect(self.db_path) as connection:
-                connection.execute("PRAGMA journal_mode=WAL")
-                self.ensure_log_schema(connection)
+            connection = sqlite3.connect(self.db_path)
+            connection.execute("PRAGMA journal_mode=WAL")
+            self.ensure_log_schema(connection)
         except (OSError, sqlite3.Error):
             if not allow_failure:
                 raise
+        finally:
+            if connection is not None:
+                connection.close()
 
     def ensure_log_schema(self, connection):
         connection.execute(
@@ -463,20 +521,22 @@ class SySeBaDaemon:
         )
 
     def stop(self):
-        self.stop_event.set()
         self.emit("INFO", "SySeBa stopping.", "STOP")
+        self.stop_event.set()
 
         if self.observer is not None:
             self.observer.stop()
             self.observer.join(timeout=10)
 
+        if self.initial_sync_thread is not None and self.initial_sync_thread.is_alive():
+            self.initial_sync_thread.join(timeout=10)
+
+        self.wait_for_work_queue(timeout=30)
+
         for _ in self.worker_threads:
             self.work_queue.put(None)
         for worker in self.worker_threads:
             worker.join(timeout=5)
-
-        if self.initial_sync_thread is not None and self.initial_sync_thread.is_alive():
-            self.initial_sync_thread.join(timeout=10)
 
         self.log_queue.put(None)
         if self.log_thread is not None:
@@ -484,6 +544,11 @@ class SySeBaDaemon:
 
         self.running = False
         self.process_lock.release()
+
+    def wait_for_work_queue(self, timeout=30):
+        deadline = time.time() + timeout
+        while getattr(self.work_queue, "unfinished_tasks", 0) and time.time() < deadline:
+            time.sleep(0.1)
 
     def enqueue_event(self, operation, path, is_directory=False):
         with self.lock:
@@ -501,40 +566,52 @@ class SySeBaDaemon:
 
     def log_writer(self):
         connection = None
+        cursor = None
         sqlite_error_reported = False
         try:
-            connection = sqlite3.connect(self.db_path)
-            self.ensure_log_schema(connection)
-            cursor = connection.cursor()
             with open(self.config.log_file, "a", encoding="utf-8") as log_file:
+                try:
+                    connection = sqlite3.connect(self.db_path)
+                    self.ensure_log_schema(connection)
+                    cursor = connection.cursor()
+                except sqlite3.Error:
+                    logging.exception("Unable to open SySeBa SQLite database. File logging continues.")
+                    sqlite_error_reported = True
+
                 while True:
                     record = self.log_queue.get()
                     if record is None:
+                        self.log_queue.task_done()
                         break
-                    line = record.line()
-                    log_file.write(line + "\n")
-                    log_file.flush()
                     try:
-                        self.insert_log_record(cursor, record)
-                        connection.commit()
-                        sqlite_error_reported = False
-                    except sqlite3.OperationalError:
+                        line = record.line()
+                        log_file.write(line + "\n")
+                        log_file.flush()
+                        if cursor is None or connection is None:
+                            continue
                         try:
-                            connection.rollback()
-                            self.ensure_log_schema(connection)
                             self.insert_log_record(cursor, record)
                             connection.commit()
                             sqlite_error_reported = False
+                        except sqlite3.OperationalError:
+                            try:
+                                connection.rollback()
+                                self.ensure_log_schema(connection)
+                                self.insert_log_record(cursor, record)
+                                connection.commit()
+                                sqlite_error_reported = False
+                            except sqlite3.Error:
+                                connection.rollback()
+                                if not sqlite_error_reported:
+                                    logging.exception("Unable to write SySeBa event to SQLite. File logging continues.")
+                                    sqlite_error_reported = True
                         except sqlite3.Error:
                             connection.rollback()
                             if not sqlite_error_reported:
                                 logging.exception("Unable to write SySeBa event to SQLite. File logging continues.")
                                 sqlite_error_reported = True
-                    except sqlite3.Error:
-                        connection.rollback()
-                        if not sqlite_error_reported:
-                            logging.exception("Unable to write SySeBa event to SQLite. File logging continues.")
-                            sqlite_error_reported = True
+                    finally:
+                        self.log_queue.task_done()
         except (OSError, sqlite3.Error):
             logging.exception("Unable to write SySeBa log file.")
         finally:
@@ -579,10 +656,12 @@ class SySeBaDaemon:
             self.set_stat("initial_running", False)
 
     def worker_loop(self):
-        while not self.stop_event.is_set():
+        while True:
             try:
                 item = self.work_queue.get(timeout=0.5)
             except Empty:
+                if self.stop_event.is_set():
+                    continue
                 continue
             if item is None:
                 self.work_queue.task_done()
@@ -597,9 +676,9 @@ class SySeBaDaemon:
                 self.work_queue.task_done()
 
     def process_event(self, operation, src_path, is_directory=False):
-        relative_path = os.path.relpath(src_path, self.config.source)
-        if relative_path.startswith(".."):
+        if not is_inside_base(self.config.source, src_path):
             return
+        relative_path = os.path.relpath(os.path.abspath(src_path), os.path.abspath(self.config.source))
 
         backup_path = os.path.join(self.config.backup, relative_path)
         restore_path = os.path.join(self.config.restore, relative_path)
@@ -664,10 +743,10 @@ class SySeBaDaemon:
         if os.path.exists(destination) and not overwrite:
             raise FileExistsError("Destination already exists. Enable overwrite to restore it.")
 
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
         if os.path.isdir(source_item):
             shutil.copytree(source_item, destination, dirs_exist_ok=overwrite)
         else:
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
             shutil.copy2(source_item, destination)
 
         self.increment("restored")
@@ -789,6 +868,8 @@ class SySeBaDaemon:
 
 class SySeBaHTTPHandler(BaseHTTPRequestHandler):
     daemon_ref = None
+    auth_token = None
+    auth_source = "disabled"
 
     @property
     def daemon(self):
@@ -807,6 +888,8 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
                 self.send_html(render_dashboard_html())
             elif path == "/logo":
                 self.send_file(os.path.join(SCRIPT_DIR, "SySeBa_Logo.webp"))
+            elif not self.require_auth():
+                return
             elif path == "/api/status":
                 self.send_json(self.daemon.status())
             elif path == "/api/logs":
@@ -832,6 +915,8 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         try:
+            if not self.require_auth():
+                return
             data = self.read_json()
             if parsed.path == "/api/config":
                 updated = self.daemon.update_config(data)
@@ -851,15 +936,50 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
 
     def read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
+        if length > MAX_JSON_BODY:
+            raise ValueError("Request body too large.")
         body = self.rfile.read(length).decode("utf-8") if length else "{}"
         return json.loads(body or "{}")
 
-    def send_json(self, payload, status=HTTPStatus.OK):
+    def require_auth(self):
+        if not self.auth_token:
+            return True
+
+        supplied = self.headers.get("X-SySeBa-Token", "").strip()
+        if not supplied:
+            authorization = self.headers.get("Authorization", "").strip()
+            if authorization.lower().startswith("bearer "):
+                supplied = authorization[7:].strip()
+
+        if supplied and hmac.compare_digest(supplied, self.auth_token):
+            return True
+
+        self.send_json(
+            {"ok": False, "error": "Authentication required."},
+            HTTPStatus.UNAUTHORIZED,
+            extra_headers={"WWW-Authenticate": 'Bearer realm="SySeBa"'},
+        )
+        return False
+
+    def send_security_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+        )
+
+    def send_json(self, payload, status=HTTPStatus.OK, extra_headers=None):
         data = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -868,7 +988,7 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -885,8 +1005,11 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
         if download:
-            self.send_header("Content-Disposition", f"attachment; filename={os.path.basename(path)!r}")
+            filename = safe_download_name(path)
+            quoted = quote(filename)
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"; filename*=UTF-8\'\'{quoted}')
         self.end_headers()
         self.wfile.write(data)
 
@@ -895,8 +1018,21 @@ def tail_file(path, lines=200):
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as log_file:
-            return [line.rstrip("\n") for line in deque(log_file, maxlen=lines)]
+        block_size = 8192
+        chunks = []
+        newlines = 0
+        with open(path, "rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            position = log_file.tell()
+            while position > 0 and newlines <= lines:
+                read_size = min(block_size, position)
+                position -= read_size
+                log_file.seek(position)
+                data = log_file.read(read_size)
+                chunks.append(data)
+                newlines += data.count(b"\n")
+        content = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+        return content.splitlines()[-lines:]
     except OSError:
         return []
 
@@ -956,6 +1092,20 @@ def render_dashboard_html():
       background: rgba(255,255,255,.08);
       white-space: nowrap;
     }
+    .auth-panel {
+      background: #fff7e6;
+      border-bottom: 1px solid #e7c98a;
+      padding: 14px 24px;
+    }
+    .auth-panel .auth-inner {
+      display: flex;
+      align-items: end;
+      gap: 10px;
+      max-width: 1440px;
+      margin: 0 auto;
+      flex-wrap: wrap;
+    }
+    .auth-panel label { min-width: min(420px, 100%); }
     main { padding: 22px; max-width: 1440px; margin: 0 auto; }
     nav {
       display: flex;
@@ -1047,6 +1197,14 @@ def render_dashboard_html():
     </div>
     <div class="pill" id="runtime-pill">Caricamento stato...</div>
   </header>
+  <section class="auth-panel hide" id="auth-panel">
+    <div class="auth-inner">
+      <label>Token web SySeBa<input id="auth-token" type="password" autocomplete="current-password"></label>
+      <button class="primary" id="auth-save">Accedi</button>
+      <button class="secondary" id="auth-clear">Dimentica token</button>
+      <div class="notice" id="auth-notice"></div>
+    </div>
+  </section>
   <main>
     <nav>
       <button class="active" data-tab="status">Stato</button>
@@ -1107,6 +1265,7 @@ def render_dashboard_html():
     const tabs = document.querySelectorAll('nav button');
     let currentRestorePath = '';
     let lastConfig = null;
+    let authToken = sessionStorage.getItem('sysebaAuthToken') || '';
 
     tabs.forEach(button => button.addEventListener('click', () => {
       tabs.forEach(item => item.classList.remove('active'));
@@ -1118,13 +1277,48 @@ def render_dashboard_html():
       if (button.dataset.tab === 'restore') loadRestore(currentRestorePath);
     }));
 
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      })[char]);
+    }
+
+    function authHeaders() {
+      return authToken ? {'X-SySeBa-Token': authToken} : {};
+    }
+
+    function showAuth(message = 'Token richiesto per consultare e amministrare SySeBa.') {
+      document.getElementById('auth-panel').classList.remove('hide');
+      document.getElementById('auth-notice').textContent = message;
+      document.getElementById('auth-token').value = authToken;
+    }
+
+    function hideAuth() {
+      document.getElementById('auth-panel').classList.add('hide');
+      document.getElementById('auth-notice').textContent = '';
+    }
+
     async function request(path, options = {}) {
+      const headers = {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+        ...(options.headers || {})
+      };
       const response = await fetch(path, {
-        headers: {'Content-Type': 'application/json'},
-        ...options
+        ...options,
+        headers
       });
+      if (response.status === 401) {
+        showAuth('Token non valido o mancante.');
+        throw new Error('Autenticazione richiesta');
+      }
       const data = await response.json();
       if (!response.ok || data.ok === false) throw new Error(data.error || 'Errore richiesta');
+      hideAuth();
       return data;
     }
 
@@ -1134,19 +1328,19 @@ def render_dashboard_html():
     }
 
     function metric(label, value, detail = '') {
-      return `<div class="panel"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-small">${detail}</div></div>`;
+      return `<div class="panel"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${escapeHtml(value)}</div><div class="metric-small">${escapeHtml(detail)}</div></div>`;
     }
 
     function diskPanel(label, item) {
       const value = item.exists ? item.used_percent : 0;
       const tone = value > 90 ? 'danger' : value > 75 ? 'warn' : '';
-      return `<div class="panel"><h2>${label}</h2><div class="path">${item.path}</div><div class="bar ${tone}"><span style="width:${value}%"></span></div><div class="metric-small">${item.exists ? `${pct(value)} usato` : 'Percorso non trovato'}</div></div>`;
+      return `<div class="panel"><h2>${escapeHtml(label)}</h2><div class="path">${escapeHtml(item.path)}</div><div class="bar ${tone}"><span style="width:${value}%"></span></div><div class="metric-small">${item.exists ? `${pct(value)} usato` : 'Percorso non trovato'}</div></div>`;
     }
 
     async function loadStatus() {
       try {
         const status = await request('/api/status');
-        document.getElementById('runtime-pill').innerHTML = status.running ? '<span class="status-ok">RUNNING</span> ' + status.uptime : '<span class="status-bad">WEB ONLY</span> ' + status.uptime;
+        document.getElementById('runtime-pill').innerHTML = status.running ? '<span class="status-ok">RUNNING</span> ' + escapeHtml(status.uptime) : '<span class="status-bad">WEB ONLY</span> ' + escapeHtml(status.uptime);
         document.getElementById('metrics').innerHTML = [
           metric('PID', status.pid, status.config.config_path),
           metric('CPU', pct(status.process.cpu_percent), `${status.process.threads} thread processo`),
@@ -1160,10 +1354,10 @@ def render_dashboard_html():
         ].join('');
         const s = status.stats;
         document.getElementById('activity').innerHTML = `
-          <tr><th>Copiati</th><td>${s.copied}</td><th>Aggiornati</th><td>${s.updated}</td></tr>
-          <tr><th>Cancellati in restore</th><td>${s.deleted}</td><th>Ripristinati</th><td>${s.restored}</td></tr>
-          <tr><th>Saltati</th><td>${s.skipped}</td><th>Errori</th><td>${s.errors}</td></tr>
-          <tr><th>Eventi ricevuti</th><td>${s.queued_events}</td><th>Restart config</th><td>${status.restart_required ? 'richiesto' : 'no'}</td></tr>`;
+          <tr><th>Copiati</th><td>${escapeHtml(s.copied)}</td><th>Aggiornati</th><td>${escapeHtml(s.updated)}</td></tr>
+          <tr><th>Cancellati in restore</th><td>${escapeHtml(s.deleted)}</td><th>Ripristinati</th><td>${escapeHtml(s.restored)}</td></tr>
+          <tr><th>Saltati</th><td>${escapeHtml(s.skipped)}</td><th>Errori</th><td>${escapeHtml(s.errors)}</td></tr>
+          <tr><th>Eventi ricevuti</th><td>${escapeHtml(s.queued_events)}</td><th>Restart config</th><td>${status.restart_required ? 'richiesto' : 'no'}</td></tr>`;
       } catch (error) {
         document.getElementById('runtime-pill').textContent = error.message;
       }
@@ -1196,9 +1390,11 @@ def render_dashboard_html():
       const data = await request('/api/restore?path=' + encodeURIComponent(path));
       document.getElementById('restore-path').textContent = '/' + (data.path || '');
       const rows = data.items.map(item => {
-        const open = item.is_dir ? `<button onclick="loadRestore('${item.path.replaceAll(\"'\", \"\\\\'\")}')">Apri</button>` : `<a href="/restore/download?path=${encodeURIComponent(item.path)}">Download</a>`;
-        const restore = `<button onclick="restoreItem('${item.path.replaceAll(\"'\", \"\\\\'\")}')">Ripristina</button>`;
-        return `<tr class="restore-row"><td class="path">${item.name}</td><td>${item.is_dir ? 'dir' : 'file'}</td><td>${item.size_human}</td><td>${item.mtime}</td><td>${open} ${restore}</td></tr>`;
+        const open = item.is_dir
+          ? `<button data-action="open" data-path="${escapeHtml(item.path)}">Apri</button>`
+          : `<button data-action="download" data-path="${escapeHtml(item.path)}">Download</button>`;
+        const restore = `<button data-action="restore" data-path="${escapeHtml(item.path)}">Ripristina</button>`;
+        return `<tr class="restore-row"><td class="path">${escapeHtml(item.name)}</td><td>${item.is_dir ? 'dir' : 'file'}</td><td>${escapeHtml(item.size_human)}</td><td>${escapeHtml(item.mtime)}</td><td>${open} ${restore}</td></tr>`;
       }).join('');
       document.getElementById('restore-list').innerHTML = rows || '<tr><td colspan="5">Area restore vuota.</td></tr>';
     }
@@ -1210,8 +1406,44 @@ def render_dashboard_html():
       await loadStatus();
     }
 
+    async function downloadItem(path) {
+      const response = await fetch('/restore/download?path=' + encodeURIComponent(path), {headers: authHeaders()});
+      if (response.status === 401) {
+        showAuth('Token non valido o mancante.');
+        return;
+      }
+      if (!response.ok) throw new Error('Download non riuscito');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = path.split('/').pop() || 'download';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
     document.getElementById('save-config').addEventListener('click', saveConfig);
     document.getElementById('reload-config').addEventListener('click', loadConfig);
+    document.getElementById('auth-save').addEventListener('click', async () => {
+      authToken = document.getElementById('auth-token').value.trim();
+      sessionStorage.setItem('sysebaAuthToken', authToken);
+      await loadStatus();
+    });
+    document.getElementById('auth-clear').addEventListener('click', () => {
+      authToken = '';
+      sessionStorage.removeItem('sysebaAuthToken');
+      showAuth('Token dimenticato.');
+    });
+    document.getElementById('restore-list').addEventListener('click', event => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const path = button.dataset.path || '';
+      if (button.dataset.action === 'open') loadRestore(path);
+      if (button.dataset.action === 'download') downloadItem(path);
+      if (button.dataset.action === 'restore') restoreItem(path);
+    });
     document.getElementById('restore-up').addEventListener('click', () => {
       const parts = currentRestorePath.split('/').filter(Boolean);
       parts.pop();
@@ -1317,28 +1549,56 @@ def colored_bar(percent, width):
     return color(raw, "green")
 
 
-def start_web_server(daemon, host, port):
+def start_web_server(daemon, host, port, auth_token=None, auth_source="disabled"):
     SySeBaHTTPHandler.daemon_ref = daemon
+    SySeBaHTTPHandler.auth_token = auth_token
+    SySeBaHTTPHandler.auth_source = auth_source
     server = ThreadingHTTPServer((host, port), SySeBaHTTPHandler)
     thread = threading.Thread(target=server.serve_forever, name="syseba-web", daemon=True)
     thread.start()
     daemon.emit("INFO", f"Web interface listening on http://{host}:{port}", "WEB")
+    if auth_token:
+        daemon.emit("INFO", f"Web authentication enabled ({auth_source} token).", "WEB")
+    else:
+        daemon.emit("WARNING", "Web authentication disabled by explicit request.", "WEB")
     return server
 
 
-def create_systemd_service(config_path=None, with_web=False, web_host=DEFAULT_WEB_HOST, web_port=DEFAULT_WEB_PORT):
-    config_arg = f" --config {config_path}" if config_path else ""
-    web_arg = f" --web --web-host {web_host} --web-port {web_port}" if with_web else ""
+def create_systemd_service(
+    config_path=None,
+    with_web=False,
+    web_host=DEFAULT_WEB_HOST,
+    web_port=DEFAULT_WEB_PORT,
+    web_token_file=None,
+    no_web_auth=False,
+):
+    command = ["/usr/bin/python3", "/opt/syseba/syseba.py", "--silent"]
+    if config_path:
+        command.extend(["--config", config_path])
+    if with_web:
+        command.extend(["--web", "--web-host", web_host, "--web-port", str(web_port)])
+        if web_token_file:
+            command.extend(["--web-token-file", web_token_file])
+        if no_web_auth:
+            command.append("--no-web-auth")
+    exec_start = " ".join(shlex.quote(part) for part in command)
     service_content = f"""[Unit]
 Description={APP_TITLE}
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/syseba/syseba.py --silent{config_arg}{web_arg}
+ExecStart={exec_start}
 WorkingDirectory=/opt/syseba
 Restart=always
+RestartSec=5
 User=root
 Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/syseba /var/log -/storage -/backup -/restore -/dati -/mnt -/media -/srv
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -1361,6 +1621,9 @@ def build_parser():
     parser.add_argument("--web-only", action="store_true", help="Start only the web interface without file watcher")
     parser.add_argument("--web-host", default=DEFAULT_WEB_HOST, help="Web interface host")
     parser.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT, help="Web interface port")
+    parser.add_argument("--web-token", help="Token required by the web interface")
+    parser.add_argument("--web-token-file", default=DEFAULT_WEB_TOKEN_FILE, help="File containing the web token")
+    parser.add_argument("--no-web-auth", action="store_true", help="Disable web authentication (unsafe)")
     parser.add_argument("--no-initial-sync", action="store_true", help="Skip initial sync at startup")
     parser.add_argument("--lockfile", default=DEFAULT_LOCKFILE, help="Lock file path")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH, help="SQLite database path")
@@ -1373,7 +1636,14 @@ def main():
     args = parser.parse_args()
 
     if args.create_daemon:
-        create_systemd_service(args.config, args.web, args.web_host, args.web_port)
+        create_systemd_service(
+            args.config,
+            args.web,
+            args.web_host,
+            args.web_port,
+            args.web_token_file,
+            args.no_web_auth,
+        )
         return
 
     config = SySeBaConfig.load(args.config)
@@ -1396,8 +1666,16 @@ def main():
             daemon.start()
 
         if args.web or args.web_only:
-            web_server = start_web_server(daemon, args.web_host, args.web_port)
+            web_token, web_token_source = load_web_token(args.web_token, args.web_token_file, args.no_web_auth)
+            web_server = start_web_server(daemon, args.web_host, args.web_port, web_token, web_token_source)
             print(f"Web interface: http://{args.web_host}:{args.web_port}")
+            if web_token:
+                if web_token_source == "generated":
+                    print(f"Web token: {web_token}")
+                else:
+                    print(f"Web token source: {web_token_source}")
+            else:
+                print("WARNING: web authentication is disabled.")
 
         if not args.silent and not args.web_only:
             ConsoleDashboard(daemon, args.console_refresh).run()

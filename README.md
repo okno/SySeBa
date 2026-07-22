@@ -27,6 +27,7 @@ By integrating seamlessly with systemd and operating without requiring external 
 | 🗑️ **Soft‑delete** | Removed files are relocated to `/restore` |
 | 📝 **Dual logging** | Flat‑file **&** SQLite (`/opt/syseba/syseba_logs.db`) |
 | 📊 **Live dashboard** | Colour ASCII bars for disk/CPU/RAM usage |
+| 🌐 **Protected web UI** | Token-protected status, logs, config, and restore browser |
 | 🛠️ **One‑shot systemd unit** | `--create-daemon` generates & enables service |
 | 🌐 **Multi‑language** | Italian & English shipped (`syseba.lang`) |
 
@@ -83,6 +84,10 @@ sudo systemctl status syseba
 | `--silent` | Run without console UI (log only) |
 | `--config PATH` | Alternate config file |
 | `--lang it/en` | Interface language |
+| `--web` | Start token-protected web dashboard |
+| `--web-token TOKEN` | Web dashboard token |
+| `--web-token-file PATH` | Read web dashboard token from file |
+| `--no-web-auth` | Disable web authentication for local lab use only |
 | `--create-daemon` | Generate & enable systemd unit |
 
 ## ❓ FAQ
