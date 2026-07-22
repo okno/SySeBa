@@ -26,8 +26,9 @@ By integrating seamlessly with systemd and operating without requiring external 
 | 👁️ **Real‑time watch** | *watchdog* library hooks inotify events |
 | 🗑️ **Soft‑delete** | Removed files are relocated to `/restore` |
 | 📝 **Dual logging** | Flat‑file **&** SQLite (`/opt/syseba/syseba_logs.db`) |
-| 📊 **Live dashboard** | Colour ASCII bars for disk/CPU/RAM usage |
-| 🌐 **Protected web UI** | Token-protected status, logs, config, and restore browser |
+| 📊 **Adaptive console** | Responsive status view for narrow and short terminals |
+| 🌐 **Protected web UI** | Accessible, responsive status, filtered logs, config diff, and restore browser |
+| ♻️ **Guided restore** | Conflict detection with safe rename or explicit overwrite/merge |
 | 🛠️ **One‑shot systemd unit** | `--create-daemon` generates & enables service |
 | 🌐 **Multi‑language** | Italian & English shipped (`syseba.lang`) |
 
@@ -78,6 +79,18 @@ sudo systemctl status syseba
 ```
 
 ## 🛠️ CLI Reference
+Operational commands remain optional, so existing invocations continue to start the daemon.
+
+| Command | Description |
+|---------|-------------|
+| `run` | Start the watcher; this is the default when no command is supplied |
+| `status` | Inspect lock state, PID, paths, and disk usage |
+| `logs` | Print the latest log lines |
+| `config-check` | Validate paths and detect unsafe directory overlap |
+| `restore-list` | Search and page through the restore area |
+| `restore-copy --path PATH` | Restore an item; add `--rename` or `--overwrite` for conflicts |
+| `service-install` | Generate and enable the systemd unit |
+
 | Option | Description |
 |--------|-------------|
 | `--help` | Show built‑in help |
@@ -89,6 +102,7 @@ sudo systemctl status syseba
 | `--web-token-file PATH` | Read web dashboard token from file |
 | `--no-web-auth` | Disable web authentication for local lab use only |
 | `--create-daemon` | Generate & enable systemd unit |
+| `--json` | Machine-readable output for operational commands |
 
 ## ❓ FAQ
 <details>
@@ -112,7 +126,7 @@ Yes – extend `initialize_database()` and `log_to_database()` for your preferre
 <details>
 <summary><strong>How do I restore a file?</strong></summary>
 
-Manually copy/move it from `restore` back to `source`; SySeBa will sync it on the next cycle.
+Use the Web UI Restore tab or `syseba.py restore-copy --path relative/file`. If the destination already exists, choose a timestamped new name or explicitly overwrite/merge it.
 </details>
 
 <details>

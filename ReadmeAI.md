@@ -2,19 +2,23 @@
 
 SySeBa e un servizio Python per sincronizzare in tempo reale una directory sorgente verso una directory di backup, conservando i file cancellati in una area restore. Questa versione aggiunge una dashboard console piu leggibile, un servizio web integrato, API JSON, consultazione dell'area restore e modifica della configurazione da browser.
 
-Questa documentazione descrive il pacchetto locale creato per test prima di pubblicare le modifiche su GitHub.
+Questa documentazione descrive la versione corrente, mantenendo compatibili configurazione e modalita di avvio delle versioni precedenti.
 
 ## Novita principali
 
 - Motore SySeBa rifattorizzato in classi dedicate: configurazione, lock, daemon, logging, console dashboard e web server.
-- Dashboard console ridisegnata con sezioni chiare: stato, percorsi, dischi, processo, sync iniziale, contatori e ultimi eventi.
+- Dashboard console adattiva alla larghezza e all'altezza del terminale, con output non interattivo privo di refresh ripetuti.
 - Web dashboard integrata senza Flask o altri framework web: usa solo la libreria standard Python.
 - Autenticazione token per API e azioni web, con header di sicurezza HTTP.
 - Endpoint API per stato completo, log, configurazione e area restore.
 - Modifica della configurazione da web con salvataggio su `syseba.conf`.
-- Navigazione dell'area restore da browser.
+- Navigazione dell'area restore con ricerca, ordinamento, paginazione e breadcrumb.
 - Download dei file presenti nell'area restore.
-- Ripristino di file o directory dall'area restore verso la source.
+- Ripristino guidato con rilevamento conflitti, nuovo nome timestamp oppure sovrascrittura/unione esplicita.
+- Log Web filtrabili per testo e livello, refresh automatico, copia e download.
+- Configurazione Web con confronto tra valori attivi e valori salvati e indicazione persistente del riavvio richiesto.
+- Web UI responsive, navigabile da tastiera e dotata di ruoli e notifiche accessibili.
+- Comandi CLI operativi per stato, log, validazione config e restore.
 - Logging su file e SQLite con livello, operazione, sorgente, destinazione e info aggiuntive.
 - Lock process piu robusto: se trova un PID vecchio non piu attivo, lo sostituisce.
 - Shutdown piu pulito di observer, worker, logging thread e web server.
@@ -24,6 +28,7 @@ Questa documentazione descrive il pacchetto locale creato per test prima di pubb
 
 ```text
 syseba.py          Motore, console dashboard, web server e CLI
+syseba_web.js      Logica della Web UI, servita direttamente da SySeBa
 syseba.conf        Configurazione base
 syseba.lang        Etichette lingua italiana/inglese
 requirements.txt  Dipendenze Python
@@ -130,6 +135,33 @@ Utile per systemd o sessioni senza interfaccia console:
 sudo python3 /opt/syseba/syseba.py --silent --config /opt/syseba/syseba.conf
 ```
 
+## Comandi CLI operativi
+
+Senza comando SySeBa continua ad avviare il watcher come nelle versioni precedenti. I comandi disponibili sono:
+
+| Comando | Funzione |
+|---|---|
+| `run` | Avvia il watcher; e il comportamento predefinito |
+| `status` | Mostra lock, PID, configurazione e spazio disco |
+| `logs` | Legge le ultime righe del log |
+| `config-check` | Valida configurazione, directory mancanti e sovrapposizioni pericolose |
+| `restore-list` | Elenca, cerca, ordina e pagina l'area restore |
+| `restore-copy` | Ripristina un elemento dalla CLI |
+| `service-install` | Crea e abilita il servizio systemd |
+
+Esempi:
+
+```bash
+python3 syseba.py status --config /opt/syseba/syseba.conf
+python3 syseba.py logs --lines 250
+python3 syseba.py config-check --json
+python3 syseba.py restore-list --path Documenti --search fattura --page-size 25
+python3 syseba.py restore-copy --path Documenti/file.txt --rename
+python3 syseba.py restore-copy --path Documenti/file.txt --overwrite
+```
+
+`--json` produce output strutturato per `status`, `logs`, `config-check`, `restore-list` e `restore-copy`.
+
 ## Avvio con dashboard web
 
 Avvia watcher, console disattivata e dashboard web:
@@ -217,10 +249,14 @@ La web dashboard contiene quattro aree:
 
 | Area | Funzione |
 |---|---|
-| Stato | Stato processo, percorsi, dischi, risorse, contatori e sync iniziale |
-| Log | Lettura delle ultime righe del file log |
-| Configurazione | Modifica di source, backup, restore, log e threads |
-| Restore | Navigazione, download e ripristino di file dalla restore area |
+| Stato | Stato processo, aggiornamento dati, percorsi, dischi, risorse, contatori e stato esplicito della sync iniziale |
+| Log | Filtri per livello/testo, numero righe, auto-refresh, copia e download |
+| Configurazione | Modifica dei valori e confronto tra configurazione attiva e salvata |
+| Restore | Breadcrumb, ricerca, ordinamento, paginazione, download e ripristino guidato |
+
+Gli stati della sincronizzazione iniziale distinguono `pending`, `running`, `completed`, `completed_with_errors`, `skipped`, `stopped`, `failed` e `not_available`. In modalita Web-only o con sync saltata non viene mostrato un falso avanzamento al 100%.
+
+Quando la configurazione salvata differisce da quella usata dal watcher, la dashboard mostra un avviso persistente. Se SySeBa e avviato dal proprio servizio systemd, puo richiedere il riavvio dalla Web UI; altrimenti visualizza il comando manuale.
 
 ## API disponibili
 
@@ -262,6 +298,12 @@ GET /api/config
 Restituisce la configurazione letta dal file.
 
 ```http
+GET /api/config/state
+```
+
+Restituisce separatamente `active`, `saved`, i campi presenti in `changes` e `restart_required`.
+
+```http
 POST /api/config
 Content-Type: application/json
 
@@ -279,10 +321,16 @@ Salva `syseba.conf`. Se il daemon sta gia girando, riavvia SySeBa per applicare 
 ### Area restore
 
 ```http
-GET /api/restore?path=
+GET /api/restore?path=&search=&page=1&page_size=100&sort=name&direction=asc
 ```
 
-Lista directory e file nell'area restore.
+Lista directory e file nell'area restore. `page_size` e limitato a 250; `sort` accetta `name`, `mtime` o `size`.
+
+```http
+GET /api/restore/info?path=cartella/file.txt
+```
+
+Restituisce metadati, destinazione prevista e `destination_exists`, usato dal flusso di conferma.
 
 ```http
 GET /restore/download?path=cartella/file.txt
@@ -296,11 +344,25 @@ Content-Type: application/json
 
 {
   "path": "cartella/file.txt",
-  "overwrite": false
+  "strategy": "rename"
 }
 ```
 
-Ripristina il file o la directory indicata dalla restore area verso la source.
+Ripristina il file o la directory indicata dalla restore area verso la source. Le strategie sono:
+
+| Strategia | Comportamento |
+|---|---|
+| `fail` | Non modifica una destinazione esistente; e il default |
+| `rename` | Crea un nuovo nome con suffisso `.restored-DATA-ORA` |
+| `overwrite` | Sovrascrive il file o unisce una directory dello stesso tipo |
+
+Per compatibilita e ancora accettato `"overwrite": true`.
+
+```http
+POST /api/service/restart
+```
+
+Richiede il riavvio solo quando il processo rileva di essere eseguito dal servizio systemd. Negli altri casi l'API restituisce il comando manuale da usare.
 
 ## Log e database
 
@@ -511,10 +573,18 @@ sudo systemctl start syseba
 
 ### Restore non ripristina perche il file esiste gia
 
-Per sicurezza il restore web non sovrascrive se `overwrite` e `false`. Rinomina o sposta il file nella source, oppure usa API con:
+Per sicurezza SySeBa non sovrascrive implicitamente. La Web UI apre un dialogo e permette di:
 
-```json
-{"overwrite": true}
+- ripristinare con un nuovo nome timestamp;
+- sovrascrivere il file;
+- unire una directory dello stesso tipo;
+- annullare.
+
+Dalla CLI:
+
+```bash
+python3 syseba.py restore-copy --path cartella/file.txt --rename
+python3 syseba.py restore-copy --path cartella/file.txt --overwrite
 ```
 
 ## FAQ
@@ -533,7 +603,7 @@ Si. La configurazione viene salvata su `syseba.conf`. Riavvia SySeBa per applica
 
 ### Posso vedere i log dal browser?
 
-Si. La sezione Log legge il file configurato nel campo `log`.
+Si. La sezione Log legge il file configurato, filtra testo e livelli, aggiorna automaticamente e permette copia o download delle righe visualizzate.
 
 ### Serve un database esterno?
 
@@ -560,19 +630,13 @@ python3 syseba.py --lang en
 python3 syseba.py --lang it
 ```
 
-### Dove trovo il pacchetto locale?
+## Checklist installazione o aggiornamento
 
-Il pacchetto locale viene creato in formato `.tgz` dalla procedura di build locale. Non serve pushare su GitHub per provarlo sul secondo PC.
-
-## Checklist test secondo PC
-
-1. Copia il pacchetto `.tgz` sul secondo PC.
-2. Estrai in `/opt/syseba`.
-3. Installa `requirements.txt`.
-4. Controlla `syseba.conf`.
-5. Avvia in console e verifica la dashboard.
-6. Avvia con `--web` e apri la dashboard da browser.
-7. Crea/modifica/cancella un file nella source.
-8. Verifica copia in backup e spostamento in restore.
-9. Prova download e restore da web.
-10. Solo dopo i test, valuta commit e push su GitHub.
+1. Copia tutti i file, incluso `syseba_web.js`, in `/opt/syseba`.
+2. Installa o aggiorna `requirements.txt`.
+3. Esegui `python3 syseba.py config-check --config /opt/syseba/syseba.conf`.
+4. Riavvia il servizio e controlla `systemctl status syseba`.
+5. Verifica la dashboard console o Web.
+6. Crea, modifica e cancella un file di prova nella source.
+7. Verifica copia in backup e spostamento in restore.
+8. Prova download, rinomina e restore da Web UI o CLI.
