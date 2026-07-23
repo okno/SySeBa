@@ -6,10 +6,10 @@
     it: {
       loading_status: 'Caricamento stato...', web_token: 'Token web SySeBa', sign_in: 'Accedi', forget_token: 'Dimentica token',
       status: 'Stato', logs: 'Log', configuration: 'Configurazione', restore: 'Restore', overview: 'Panoramica',
-      restart_required: 'Riavvio necessario', restart_explanation: 'La configurazione salvata non e ancora attiva.', restart_service: 'Riavvia servizio',
-      session_activity: 'Attivita dalla partenza', rows: 'Righe', search: 'Cerca', search_logs: 'Testo nel log', level: 'Livello', all: 'Tutti',
+      restart_required: 'Riavvio necessario', restart_explanation: 'La configurazione salvata non è ancora attiva.', restart_service: 'Riavvia servizio',
+      session_activity: 'Attività dalla partenza', rows: 'Righe', search: 'Cerca', search_logs: 'Testo nel log', level: 'Livello', all: 'Tutti',
       auto_refresh: 'Aggiorna automaticamente', refresh: 'Aggiorna', copy: 'Copia', download: 'Download', follow_tail: 'Segui ultima riga',
-      source: 'Source', backup: 'Backup', log_file: 'File di log', workers: 'Thread worker', save_configuration: 'Salva configurazione', reload: 'Ricarica',
+      source: 'Sorgente', backup: 'Backup', log_file: 'File di log', workers: 'Thread worker', save_configuration: 'Salva configurazione', reload: 'Ricarica',
       restore_area: 'Area restore', up: 'Su', search_folder: 'Cerca nella cartella', sort_by: 'Ordina per', name: 'Nome', modified: 'Modifica',
       size: 'Dimensione', direction: 'Direzione', ascending: 'Crescente', descending: 'Decrescente', per_page: 'Per pagina', apply: 'Applica',
       type: 'Tipo', actions: 'Azioni', previous: 'Precedente', next: 'Successiva', confirm_restore: 'Conferma ripristino', cancel: 'Annulla',
@@ -17,19 +17,19 @@
       auth_required: 'Inserisci il token per consultare e amministrare SySeBa.', auth_invalid: 'Token non valido o mancante.', signed_in: 'Accesso effettuato.',
       token_forgotten: 'Token dimenticato.', authentication_required: 'Autenticazione richiesta', request_failed: 'Operazione non riuscita.',
       request_timeout: 'Il server non ha risposto entro il tempo previsto.', offline: 'Dashboard non raggiungibile', running: 'ATTIVO', web_only: 'SOLO WEB',
-      pid: 'PID', cpu: 'CPU', ram: 'RAM', initial_sync: 'Sync iniziale', queue: 'Coda', process_threads: 'thread processo',
+      pid: 'PID', cpu: 'CPU', ram: 'RAM', initial_sync: 'Sincronizzazione iniziale', queue: 'Coda', process_threads: 'thread del processo',
       sync_pending: 'in attesa', sync_running: 'in corso', sync_completed: 'completata', sync_completed_with_errors: 'completata con errori',
       sync_skipped: 'saltata', sync_stopped: 'interrotta', sync_failed: 'fallita', sync_not_available: 'non disponibile', not_available: 'n/d',
       used: 'usato', free: 'liberi', path_not_found: 'Percorso non trovato', copied: 'Copiati', updated: 'Aggiornati',
-      deleted: 'Cancellati in restore', restored: 'Ripristinati', skipped: 'Saltati', errors: 'Errori', events_received: 'Eventi ricevuti',
+      deleted: 'Spostati nel restore', restored: 'Ripristinati', skipped: 'Saltati', errors: 'Errori', events_received: 'Eventi ricevuti',
       last_update: 'Ultimo aggiornamento', session_started: 'Sessione avviata', restart_manual: 'Riavvio manuale richiesto',
       config_no_changes: 'La configurazione salvata coincide con quella attiva.', pending_changes: 'Modifiche salvate in attesa di riavvio',
       field: 'Campo', active_value: 'Valore attivo', saved_value: 'Valore salvato', configuration_saved: 'Configurazione salvata.',
       discard_changes: 'Scartare le modifiche non salvate?', no_logs: 'Nessun log disponibile.', visible_lines: 'righe visualizzate',
       logs_copied: 'Log copiato negli appunti.', copy_failed: 'Impossibile copiare il log.', directory: 'cartella', file: 'file',
-      open: 'Apri', conflict: 'Esiste gia nella source', empty_restore: 'Nessun elemento in questa cartella.', items: 'elementi',
-      page: 'Pagina', of: 'di', restore_question: 'Ripristinare questo elemento nella source?',
-      restore_conflict_question: 'La destinazione esiste gia. Scegli come procedere.', destination: 'Destinazione',
+      open: 'Apri', conflict: 'Esiste già nella sorgente', empty_restore: 'Nessun elemento in questa cartella.', items: 'elementi',
+      page: 'Pagina', of: 'di', restore_question: 'Ripristinare questo elemento nella sorgente?',
+      restore_conflict_question: 'La destinazione esiste già. Scegli come procedere.', destination: 'Destinazione',
       restore_success: 'Ripristino completato', download_failed: 'Download non riuscito.',
       service_restart_question: 'Riavviare ora il servizio SySeBa?', service_restarting: 'Riavvio del servizio richiesto.'
     },
@@ -78,6 +78,7 @@
   let configBaseline = '';
   let selectedRestore = null;
   let lastConnectionError = '';
+  let authenticationBlocked = false;
 
   class AuthRequiredError extends Error {}
 
@@ -142,7 +143,10 @@
     } finally {
       window.clearTimeout(timeout);
     }
-    if (response.status === 401) throw new AuthRequiredError(t('authentication_required'));
+    if (response.status === 401) {
+      authenticationBlocked = true;
+      throw new AuthRequiredError(t('authentication_required'));
+    }
     let data = {};
     try {
       data = await response.json();
@@ -154,8 +158,25 @@
       failure.code = data.code || 'request_failed';
       throw failure;
     }
+    authenticationBlocked = false;
     hideAuth();
     return data;
+  }
+
+  async function bootstrap() {
+    try {
+      const response = await fetch('/api/auth', {cache: 'no-store'});
+      const state = await response.json();
+      if (state.required && !authToken) {
+        authenticationBlocked = true;
+        showAuth(t('auth_required'));
+        document.getElementById('runtime-pill').textContent = t('authentication_required');
+        return;
+      }
+    } catch (error) {
+      // loadStatus provides the localized connection error.
+    }
+    await loadStatus();
   }
 
   async function runAction(action, options) {
@@ -591,6 +612,7 @@
     button.disabled = true;
     authToken = document.getElementById('auth-token').value.trim();
     sessionStorage.setItem('sysebaAuthToken', authToken);
+    authenticationBlocked = false;
     const authenticated = await loadStatus();
     button.disabled = false;
     if (!authenticated) return;
@@ -605,6 +627,7 @@
   document.getElementById('auth-clear').addEventListener('click', () => {
     authToken = '';
     sessionStorage.removeItem('sysebaAuthToken');
+    authenticationBlocked = true;
     showAuth(t('token_forgotten'));
     document.getElementById('auth-token').focus();
   });
@@ -692,16 +715,16 @@
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
+    if (document.hidden || authenticationBlocked) return;
     loadStatus();
     if (currentTab === 'logs' && document.getElementById('log-auto').checked) loadLogs(true);
   });
 
   applyTranslations();
   activateTab('status');
-  loadStatus();
+  bootstrap();
   window.setInterval(() => {
-    if (document.hidden) return;
+    if (document.hidden || authenticationBlocked) return;
     loadStatus();
     if (currentTab === 'logs' && document.getElementById('log-auto').checked) loadLogs(true);
   }, 3000);

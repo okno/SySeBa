@@ -10,8 +10,10 @@ import shlex
 import shutil
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -41,9 +43,12 @@ DEFAULT_LOCKFILE = "/opt/syseba/syseba.lock"
 DEFAULT_DB_PATH = "/opt/syseba/syseba_logs.db"
 DEFAULT_LANG_FILE = "/opt/syseba/syseba.lang"
 DEFAULT_WEB_HOST = "127.0.0.1"
+DEFAULT_SERVICE_WEB_HOST = "0.0.0.0"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_WEB_TOKEN_FILE = "/opt/syseba/syseba_web.token"
 DEFAULT_SYSTEMD_SERVICE = "syseba.service"
+DEFAULT_SYSTEMD_UNIT = "/etc/systemd/system/syseba.service"
+DEFAULT_INSTALL_DIR = "/opt/syseba"
 MAX_JSON_BODY = 64 * 1024
 DEFAULT_RESTORE_PAGE_SIZE = 100
 MAX_RESTORE_PAGE_SIZE = 250
@@ -62,25 +67,45 @@ class SySeBaConfig:
     config_path: str
 
     @classmethod
-    def load(cls, config_path=None):
-        path = find_config_file(config_path)
+    def load(cls, config_path=None, language="en"):
+        italian = language == "it"
+        path = find_config_file(config_path, language)
         parser = configparser.ConfigParser()
         parser.read(path, encoding="utf-8-sig")
         if not parser.has_section("SETTINGS"):
-            raise ValueError("Invalid or missing [SETTINGS] section in config file.")
+            raise ValueError(
+                "Sezione [SETTINGS] non valida o mancante nel file di configurazione."
+                if italian
+                else "Invalid or missing [SETTINGS] section in config file."
+            )
 
         settings = parser["SETTINGS"]
         base_dir = os.path.dirname(os.path.abspath(path))
+        try:
+            threads = settings.getint("threads", 4)
+        except ValueError as exc:
+            raise ValueError(
+                "Il numero di thread deve essere un intero."
+                if italian
+                else "Threads must be an integer."
+            ) from exc
+        if threads < 1 or threads > 64:
+            raise ValueError(
+                "Il numero di thread deve essere compreso tra 1 e 64."
+                if italian
+                else "Threads must be between 1 and 64."
+            )
         return cls(
             source=normalize_path(settings.get("source", "/dati"), base_dir),
             backup=normalize_path(settings.get("backup", "/backup"), base_dir),
             restore=normalize_path(settings.get("restore", "/restore"), base_dir),
             log_file=normalize_path(settings.get("log", "/var/log/syseba.log"), base_dir),
-            threads=max(1, settings.getint("threads", 4)),
+            threads=threads,
             config_path=os.path.abspath(path),
         )
 
-    def save(self, values):
+    def save(self, values, language="en"):
+        italian = language == "it"
         updated = {
             "source": str(values.get("source", self.source)).strip(),
             "backup": str(values.get("backup", self.backup)).strip(),
@@ -90,15 +115,40 @@ class SySeBaConfig:
         }
 
         if not all(updated[key] for key in ("source", "backup", "restore", "log")):
-            raise ValueError("source, backup, restore and log cannot be empty.")
+            raise ValueError(
+                "Sorgente, backup, restore e log non possono essere vuoti."
+                if italian
+                else "Source, backup, restore, and log cannot be empty."
+            )
 
         try:
             threads = int(updated["threads"])
         except ValueError as exc:
-            raise ValueError("threads must be a number.") from exc
+            raise ValueError(
+                "Il numero di thread deve essere un intero."
+                if italian
+                else "Threads must be an integer."
+            ) from exc
         if threads < 1 or threads > 64:
-            raise ValueError("threads must be between 1 and 64.")
+            raise ValueError(
+                "Il numero di thread deve essere compreso tra 1 e 64."
+                if italian
+                else "Threads must be between 1 and 64."
+            )
         updated["threads"] = str(threads)
+
+        base_dir = os.path.dirname(os.path.abspath(self.config_path))
+        candidate = SySeBaConfig(
+            source=normalize_path(updated["source"], base_dir),
+            backup=normalize_path(updated["backup"], base_dir),
+            restore=normalize_path(updated["restore"], base_dir),
+            log_file=normalize_path(updated["log"], base_dir),
+            threads=threads,
+            config_path=os.path.abspath(self.config_path),
+        )
+        errors, _ = validate_config(candidate, language)
+        if errors:
+            raise ValueError("; ".join(errors))
 
         content = (
             "#Backup config by okno\n"
@@ -109,10 +159,9 @@ class SySeBaConfig:
             f"log = {updated['log']}\n"
             f"threads = {updated['threads']}\n"
         )
-        with open(self.config_path, "w", encoding="utf-8") as config_file:
-            config_file.write(content)
+        atomic_write_text(self.config_path, content, mode=0o640)
 
-        return SySeBaConfig.load(self.config_path)
+        return SySeBaConfig.load(self.config_path, language)
 
     def as_public_dict(self):
         return {
@@ -145,21 +194,31 @@ def normalize_path(path, base_dir):
     return os.path.abspath(expanded)
 
 
-def find_config_file(config_path=None):
-    possible_paths = []
+def find_config_file(config_path=None, language="en"):
     if config_path:
-        possible_paths.append(config_path)
-    possible_paths.extend([
+        if os.path.isfile(config_path):
+            return config_path
+        raise FileNotFoundError(
+            f"File di configurazione specificato non trovato: {config_path}"
+            if language == "it"
+            else f"Specified config file not found: {config_path}"
+        )
+
+    possible_paths = [
         os.path.join(SCRIPT_DIR, "syseba.conf"),
         "syseba.conf",
         "/etc/syseba/syseba.conf",
         "/opt/syseba/syseba.conf",
-    ])
+    ]
 
     for path in possible_paths:
         if path and os.path.exists(path):
             return path
-    raise FileNotFoundError("Config file not found in standard locations.")
+    raise FileNotFoundError(
+        "File di configurazione non trovato nei percorsi standard."
+        if language == "it"
+        else "Config file not found in standard locations."
+    )
 
 
 def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
@@ -175,6 +234,7 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
             "PROCESS": "Processo",
             "RECENT_EVENTS": "Ultimi eventi",
             "RUNNING": "ATTIVO",
+            "STOPPED": "FERMO",
             "WEB_ONLY": "SOLO WEB",
             "SOURCE": "SORGENTE",
             "BACKUP": "BACKUP",
@@ -186,7 +246,7 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
             "ERRORS": "Errori",
             "QUEUE": "Coda",
             "THREADS": "Thread",
-            "INITIAL_SYNC": "Sync iniziale",
+            "INITIAL_SYNC": "Sincronizzazione iniziale",
             "SYNC_PENDING": "in attesa",
             "SYNC_RUNNING": "in corso",
             "SYNC_COMPLETED": "completata",
@@ -199,6 +259,13 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
             "CLEAN_EXIT": "Ctrl+C per uscire in modo pulito.",
             "NOT_FOUND": "non trovato",
             "NO_EVENTS": "Nessun evento recente.",
+            "WARNING": "AVVISO",
+            "ERROR": "ERRORE",
+            "FILE": "FILE",
+            "DIRECTORY": "CARTELLA",
+            "ITEMS": "elementi",
+            "PAGE": "Pagina",
+            "DESTINATION_EXISTS": "destinazione esistente",
         },
         "en": {
             "CLOCK": "Time",
@@ -210,6 +277,7 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
             "PROCESS": "Process",
             "RECENT_EVENTS": "Recent events",
             "RUNNING": "RUNNING",
+            "STOPPED": "STOPPED",
             "WEB_ONLY": "WEB ONLY",
             "SOURCE": "SOURCE",
             "BACKUP": "BACKUP",
@@ -234,6 +302,13 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
             "CLEAN_EXIT": "Ctrl+C to exit cleanly.",
             "NOT_FOUND": "not found",
             "NO_EVENTS": "No recent events.",
+            "WARNING": "WARNING",
+            "ERROR": "ERROR",
+            "FILE": "FILE",
+            "DIRECTORY": "DIR",
+            "ITEMS": "items",
+            "PAGE": "Page",
+            "DESTINATION_EXISTS": "destination exists",
         },
     }
     labels = dict(defaults.get(lang, defaults["it"]))
@@ -250,7 +325,73 @@ def load_language(lang_file=DEFAULT_LANG_FILE, lang="it"):
     return labels
 
 
-def load_web_token(web_token=None, web_token_file=None, no_web_auth=False):
+def atomic_write_text(path, content, mode=0o644):
+    target = os.path.abspath(os.path.expanduser(path))
+    directory = os.path.dirname(target) or "."
+    os.makedirs(directory, exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(target)}.",
+        dir=directory,
+        text=True,
+    )
+    try:
+        os.fchmod(file_descriptor, mode)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as output:
+            file_descriptor = None
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, target)
+        os.chmod(target, mode)
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+    return target
+
+
+def read_private_token_file(path, language="en"):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    file_descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(file_descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(
+                f"Il percorso del token Web non è un file regolare: {path}"
+                if language == "it"
+                else f"Web token path is not a regular file: {path}"
+            )
+        with os.fdopen(file_descriptor, "r", encoding="utf-8") as token_handle:
+            file_descriptor = None
+            return token_handle.readline().strip()
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+
+
+def ensure_web_token_file(path=DEFAULT_WEB_TOKEN_FILE, language="en"):
+    token_path = os.path.abspath(os.path.expanduser(path))
+    if os.path.lexists(token_path):
+        if os.path.islink(token_path):
+            raise ValueError(
+                f"File token Web rifiutato perché è un link simbolico: {token_path}"
+                if language == "it"
+                else f"Refusing symbolic-link Web token file: {token_path}"
+            )
+        token = read_private_token_file(token_path, language)
+        if token:
+            os.chmod(token_path, 0o600)
+            return token, token_path, False
+
+    token = secrets.token_urlsafe(32)
+    atomic_write_text(token_path, token + "\n", mode=0o600)
+    return token, token_path, True
+
+
+def load_web_token(web_token=None, web_token_file=None, no_web_auth=False, language="en"):
     if no_web_auth:
         return None, "disabled"
 
@@ -261,17 +402,16 @@ def load_web_token(web_token=None, web_token_file=None, no_web_auth=False):
     if env_token:
         return env_token, "environment"
 
-    token_file = web_token_file or os.environ.get("SYSEBA_WEB_TOKEN_FILE", "").strip()
-    if token_file and os.path.exists(token_file):
-        with open(token_file, "r", encoding="utf-8") as token_handle:
-            token = token_handle.readline().strip()
-        if token:
-            return token, "file"
+    token_file = (
+        web_token_file
+        or os.environ.get("SYSEBA_WEB_TOKEN_FILE", "").strip()
+        or DEFAULT_WEB_TOKEN_FILE
+    )
+    token, _, created = ensure_web_token_file(token_file, language)
+    return token, "generated-file" if created else "file"
 
-    return secrets.token_urlsafe(32), "generated"
 
-
-def ensure_dependencies():
+def ensure_dependencies(language="en"):
     missing = []
     if psutil is None:
         missing.append("psutil")
@@ -279,7 +419,14 @@ def ensure_dependencies():
         missing.append("watchdog")
     if missing:
         joined = ", ".join(missing)
-        raise RuntimeError(f"Missing dependencies: {joined}. Install them with: pip install -r requirements.txt")
+        raise RuntimeError(
+            (
+                f"Dipendenze mancanti: {joined}. Installale con: "
+                "pip install -r requirements.txt"
+            )
+            if language == "it"
+            else f"Missing dependencies: {joined}. Install them with: pip install -r requirements.txt"
+        )
 
 
 def process_exists(pid):
@@ -514,12 +661,20 @@ class SySeBaDaemon:
             "initial_running": False,
         }
 
+    def message(self, italian, english):
+        return italian if self.language == "it" else english
+
     def start(self):
-        ensure_dependencies()
+        ensure_dependencies(self.language)
         self.prepare_paths()
         acquired, pid = self.process_lock.acquire()
         if not acquired:
-            raise RuntimeError(f"SySeBa is already running with PID {pid}.")
+            raise RuntimeError(
+                self.message(
+                    f"SySeBa è già in esecuzione con PID {pid}.",
+                    f"SySeBa is already running with PID {pid}.",
+                )
+            )
 
         self.initialize_database()
         self.start_log_writer()
@@ -538,7 +693,15 @@ class SySeBaDaemon:
             self.initial_sync_thread.start()
 
         self.running = True
-        self.emit("INFO", f"SySeBa started. Watching {self.config.source}", "START", self.config.source)
+        self.emit(
+            "INFO",
+            self.message(
+                f"SySeBa avviato. Monitoraggio di {self.config.source}",
+                f"SySeBa started. Watching {self.config.source}",
+            ),
+            "START",
+            self.config.source,
+        )
 
     def start_web_only(self):
         self.web_only = True
@@ -547,7 +710,15 @@ class SySeBaDaemon:
         self.initialize_database(allow_failure=True)
         self.start_log_writer()
         self.running = False
-        self.emit("INFO", "Web dashboard started in web-only mode.", "WEB", self.config.config_path)
+        self.emit(
+            "INFO",
+            self.message(
+                "Dashboard Web avviata in modalità solo Web.",
+                "Web dashboard started in web-only mode.",
+            ),
+            "WEB",
+            self.config.config_path,
+        )
 
     def start_log_writer(self):
         if self.log_thread is not None and self.log_thread.is_alive():
@@ -557,7 +728,12 @@ class SySeBaDaemon:
 
     def prepare_paths(self):
         if not os.path.exists(self.config.source):
-            raise FileNotFoundError(f"Source directory does not exist: {self.config.source}")
+            raise FileNotFoundError(
+                self.message(
+                    f"La directory sorgente non esiste: {self.config.source}",
+                    f"Source directory does not exist: {self.config.source}",
+                )
+            )
         os.makedirs(self.config.backup, exist_ok=True)
         os.makedirs(self.config.restore, exist_ok=True)
         self.prepare_log_path()
@@ -623,7 +799,7 @@ class SySeBaDaemon:
         )
 
     def stop(self):
-        self.emit("INFO", "SySeBa stopping.", "STOP")
+        self.emit("INFO", self.message("Arresto di SySeBa.", "SySeBa stopping."), "STOP")
         self.stop_event.set()
 
         if self.observer is not None:
@@ -678,7 +854,12 @@ class SySeBaDaemon:
                     self.ensure_log_schema(connection)
                     cursor = connection.cursor()
                 except sqlite3.Error:
-                    logging.exception("Unable to open SySeBa SQLite database. File logging continues.")
+                    logging.exception(
+                        self.message(
+                            "Impossibile aprire il database SQLite di SySeBa. Il log su file continua.",
+                            "Unable to open SySeBa SQLite database. File logging continues.",
+                        )
+                    )
                     sqlite_error_reported = True
 
                 while True:
@@ -706,17 +887,32 @@ class SySeBaDaemon:
                             except sqlite3.Error:
                                 connection.rollback()
                                 if not sqlite_error_reported:
-                                    logging.exception("Unable to write SySeBa event to SQLite. File logging continues.")
+                                    logging.exception(
+                                        self.message(
+                                            "Impossibile scrivere l'evento SySeBa in SQLite. Il log su file continua.",
+                                            "Unable to write SySeBa event to SQLite. File logging continues.",
+                                        )
+                                    )
                                     sqlite_error_reported = True
                         except sqlite3.Error:
                             connection.rollback()
                             if not sqlite_error_reported:
-                                logging.exception("Unable to write SySeBa event to SQLite. File logging continues.")
+                                logging.exception(
+                                    self.message(
+                                        "Impossibile scrivere l'evento SySeBa in SQLite. Il log su file continua.",
+                                        "Unable to write SySeBa event to SQLite. File logging continues.",
+                                    )
+                                )
                                 sqlite_error_reported = True
                     finally:
                         self.log_queue.task_done()
         except (OSError, sqlite3.Error):
-            logging.exception("Unable to write SySeBa log file.")
+            logging.exception(
+                self.message(
+                    "Impossibile scrivere il file di log di SySeBa.",
+                    "Unable to write SySeBa log file.",
+                )
+            )
         finally:
             if connection is not None:
                 connection.close()
@@ -728,7 +924,15 @@ class SySeBaDaemon:
         try:
             total_files = sum(len(files) for _, _, files in os.walk(self.config.source))
             self.set_stat("initial_total", total_files)
-            self.emit("INFO", f"Initial sync started. Files found: {total_files}", "SYNC", self.config.source)
+            self.emit(
+                "INFO",
+                self.message(
+                    f"Sincronizzazione iniziale avviata. File trovati: {total_files}",
+                    f"Initial sync started. Files found: {total_files}",
+                ),
+                "SYNC",
+                self.config.source,
+            )
 
             for root, _, files in os.walk(self.config.source):
                 if self.stop_event.is_set():
@@ -747,26 +951,68 @@ class SySeBaDaemon:
                             self.copy_with_retry(src_file, dest_file)
                             self.increment("initial_copied")
                             self.increment("copied")
-                            self.emit("INFO", f"Initial copy: {src_file} -> {dest_file}", "COPY", src_file, dest_file)
+                            self.emit(
+                                "INFO",
+                                self.message(
+                                    f"Copia iniziale: {src_file} -> {dest_file}",
+                                    f"Initial copy: {src_file} -> {dest_file}",
+                                ),
+                                "COPY",
+                                src_file,
+                                dest_file,
+                            )
                         else:
                             self.increment("initial_skipped")
                             self.increment("skipped")
                     except Exception as exc:
                         sync_errors += 1
-                        self.emit("ERROR", f"Initial sync error for {src_file}: {exc}", "ERROR", src_file, dest_file, str(exc))
+                        self.emit(
+                            "ERROR",
+                            self.message(
+                                f"Errore di sincronizzazione iniziale per {src_file}: {exc}",
+                                f"Initial sync error for {src_file}: {exc}",
+                            ),
+                            "ERROR",
+                            src_file,
+                            dest_file,
+                            str(exc),
+                        )
                     finally:
                         self.increment("initial_done")
 
             if self.stop_event.is_set():
                 self.set_initial_sync_state("stopped")
-                self.emit("WARNING", "Initial sync stopped before completion.", "SYNC", self.config.source)
+                self.emit(
+                    "WARNING",
+                    self.message(
+                        "Sincronizzazione iniziale interrotta prima del completamento.",
+                        "Initial sync stopped before completion.",
+                    ),
+                    "SYNC",
+                    self.config.source,
+                )
             else:
                 state = "completed_with_errors" if sync_errors else "completed"
                 self.set_initial_sync_state(state)
-                self.emit("INFO", "Initial sync completed.", "SYNC", self.config.source)
+                self.emit(
+                    "INFO",
+                    self.message("Sincronizzazione iniziale completata.", "Initial sync completed."),
+                    "SYNC",
+                    self.config.source,
+                )
         except Exception as exc:
             self.set_initial_sync_state("failed", str(exc))
-            self.emit("ERROR", f"Initial sync failed: {exc}", "SYNC", self.config.source, "", str(exc))
+            self.emit(
+                "ERROR",
+                self.message(
+                    f"Sincronizzazione iniziale fallita: {exc}",
+                    f"Initial sync failed: {exc}",
+                ),
+                "SYNC",
+                self.config.source,
+                "",
+                str(exc),
+            )
         finally:
             self.set_stat("initial_running", False)
 
@@ -786,7 +1032,17 @@ class SySeBaDaemon:
             try:
                 self.process_event(operation, src_path, is_directory)
             except Exception as exc:
-                self.emit("ERROR", f"Error processing {operation} for {src_path}: {exc}", "ERROR", src_path, "", str(exc))
+                self.emit(
+                    "ERROR",
+                    self.message(
+                        f"Errore durante l'operazione {operation} su {src_path}: {exc}",
+                        f"Error processing {operation} for {src_path}: {exc}",
+                    ),
+                    "ERROR",
+                    src_path,
+                    "",
+                    str(exc),
+                )
             finally:
                 self.work_queue.task_done()
 
@@ -801,7 +1057,16 @@ class SySeBaDaemon:
         if operation == "create":
             if is_directory:
                 os.makedirs(backup_path, exist_ok=True)
-                self.emit("INFO", f"Directory created: {backup_path}", "MKDIR", src_path, backup_path)
+                self.emit(
+                    "INFO",
+                    self.message(
+                        f"Directory creata: {backup_path}",
+                        f"Directory created: {backup_path}",
+                    ),
+                    "MKDIR",
+                    src_path,
+                    backup_path,
+                )
                 return
             if not os.path.exists(src_path):
                 self.increment("skipped")
@@ -812,7 +1077,16 @@ class SySeBaDaemon:
                 self.increment("skipped")
                 return
             self.increment("copied")
-            self.emit("INFO", f"Created: {src_path} -> {backup_path}", "CREATE", src_path, backup_path)
+            self.emit(
+                "INFO",
+                self.message(
+                    f"Creato: {src_path} -> {backup_path}",
+                    f"Created: {src_path} -> {backup_path}",
+                ),
+                "CREATE",
+                src_path,
+                backup_path,
+            )
             return
 
         if operation == "modify":
@@ -827,7 +1101,16 @@ class SySeBaDaemon:
                     self.increment("skipped")
                     return
                 self.increment("updated")
-                self.emit("INFO", f"Modified: {src_path} -> {backup_path}", "MODIFY", src_path, backup_path)
+                self.emit(
+                    "INFO",
+                    self.message(
+                        f"Modificato: {src_path} -> {backup_path}",
+                        f"Modified: {src_path} -> {backup_path}",
+                    ),
+                    "MODIFY",
+                    src_path,
+                    backup_path,
+                )
             return
 
         if operation == "delete":
@@ -836,7 +1119,16 @@ class SySeBaDaemon:
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
                 shutil.move(backup_path, destination)
                 self.increment("deleted")
-                self.emit("INFO", f"Deleted from source, moved backup to restore: {destination}", "DELETE", backup_path, destination)
+                self.emit(
+                    "INFO",
+                    self.message(
+                        f"Eliminato dalla sorgente; backup spostato nel restore: {destination}",
+                        f"Deleted from source, moved backup to restore: {destination}",
+                    ),
+                    "DELETE",
+                    backup_path,
+                    destination,
+                )
 
     def copy_with_retry(self, src_file, dest_file, attempts=4, delay=0.25):
         last_error = None
@@ -866,24 +1158,34 @@ class SySeBaDaemon:
     def restore_item(self, relative_path, overwrite=False, strategy=None):
         source_item = safe_join(self.config.restore, relative_path)
         if os.path.normcase(source_item) == os.path.normcase(os.path.abspath(self.config.restore)):
-            raise ValueError("Restore item path cannot be empty.")
+            raise ValueError(self.message("Il percorso dell'elemento restore non può essere vuoto.", "Restore item path cannot be empty."))
         if not os.path.exists(source_item):
-            raise FileNotFoundError("Restore item not found.")
+            raise FileNotFoundError(self.message("Elemento restore non trovato.", "Restore item not found."))
 
         destination = safe_join(self.config.source, relative_path)
         strategy = strategy or ("overwrite" if overwrite else "fail")
         if strategy not in ("fail", "overwrite", "rename"):
-            raise ValueError("Invalid restore strategy.")
+            raise ValueError(self.message("Strategia di restore non valida.", "Invalid restore strategy."))
 
         destination_exists = os.path.exists(destination)
         if destination_exists and strategy == "rename":
             destination = unique_restored_path(destination)
             destination_exists = False
         elif destination_exists and strategy == "fail":
-            raise FileExistsError("Destination already exists. Choose rename or overwrite.")
+            raise FileExistsError(
+                self.message(
+                    "La destinazione esiste già. Scegli rinomina o sovrascrivi.",
+                    "Destination already exists. Choose rename or overwrite.",
+                )
+            )
 
         if destination_exists and os.path.isdir(source_item) != os.path.isdir(destination):
-            raise FileExistsError("Destination type differs from restore item. Choose rename.")
+            raise FileExistsError(
+                self.message(
+                    "Il tipo della destinazione è diverso dall'elemento restore. Scegli rinomina.",
+                    "Destination type differs from restore item. Choose rename.",
+                )
+            )
 
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         if os.path.isdir(source_item):
@@ -892,15 +1194,24 @@ class SySeBaDaemon:
             shutil.copy2(source_item, destination)
 
         self.increment("restored")
-        self.emit("INFO", f"Restored from restore area: {source_item} -> {destination}", "RESTORE", source_item, destination)
+        self.emit(
+            "INFO",
+            self.message(
+                f"Ripristinato dall'area restore: {source_item} -> {destination}",
+                f"Restored from restore area: {source_item} -> {destination}",
+            ),
+            "RESTORE",
+            source_item,
+            destination,
+        )
         return destination
 
     def restore_item_info(self, relative_path):
         source_item = safe_join(self.config.restore, relative_path)
         if os.path.normcase(source_item) == os.path.normcase(os.path.abspath(self.config.restore)):
-            raise ValueError("Restore item path cannot be empty.")
+            raise ValueError(self.message("Il percorso dell'elemento restore non può essere vuoto.", "Restore item path cannot be empty."))
         if not os.path.exists(source_item):
-            raise FileNotFoundError("Restore item not found.")
+            raise FileNotFoundError(self.message("Elemento restore non trovato.", "Restore item not found."))
         destination = safe_join(self.config.source, relative_path)
         stat = os.stat(source_item)
         return {
@@ -926,7 +1237,7 @@ class SySeBaDaemon:
         restore_root = self.config.restore
         target = safe_join(restore_root, relative_path)
         if not os.path.exists(target):
-            raise FileNotFoundError("Restore path not found.")
+            raise FileNotFoundError(self.message("Percorso restore non trovato.", "Restore path not found."))
         if not os.path.isdir(target):
             stat = os.stat(target)
             return {
@@ -942,11 +1253,11 @@ class SySeBaDaemon:
             page = max(1, int(page))
             page_size = max(1, min(int(page_size), MAX_RESTORE_PAGE_SIZE))
         except (TypeError, ValueError) as exc:
-            raise ValueError("Invalid restore pagination.") from exc
+            raise ValueError(self.message("Paginazione restore non valida.", "Invalid restore pagination.")) from exc
         if sort_by not in ("name", "mtime", "size"):
-            raise ValueError("Invalid restore sort field.")
+            raise ValueError(self.message("Campo di ordinamento restore non valido.", "Invalid restore sort field."))
         if direction not in ("asc", "desc"):
-            raise ValueError("Invalid restore sort direction.")
+            raise ValueError(self.message("Direzione di ordinamento restore non valida.", "Invalid restore sort direction."))
 
         search_key = str(search or "").strip().casefold()
         items = []
@@ -996,16 +1307,22 @@ class SySeBaDaemon:
         }
 
     def get_config_from_disk(self):
-        return SySeBaConfig.load(self.config.config_path)
+        return SySeBaConfig.load(self.config.config_path, self.language)
 
     def update_config(self, values):
-        updated = self.config.save(values)
+        updated = self.config.save(values, self.language)
         active = self.config.as_public_dict()
         saved = updated.as_public_dict()
         self.restart_required = any(active.get(key) != saved.get(key) for key in ("source", "backup", "restore", "log_file", "threads"))
-        message = "Configuration updated from web interface."
+        message = self.message(
+            "Configurazione aggiornata dall'interfaccia Web.",
+            "Configuration updated from web interface.",
+        )
         if self.restart_required:
-            message += " Restart SySeBa to apply runtime changes."
+            message += self.message(
+                " Riavvia SySeBa per applicare le modifiche.",
+                " Restart SySeBa to apply runtime changes.",
+            )
         self.emit("INFO", message, "CONFIG", self.config.config_path)
         return updated
 
@@ -1038,16 +1355,36 @@ class SySeBaDaemon:
     def request_service_restart(self):
         service = self.service_state()
         if not service["restart_available"]:
-            raise RuntimeError(f"Automatic restart is unavailable. Run: {service['restart_command']}")
+            raise RuntimeError(
+                self.message(
+                    f"Riavvio automatico non disponibile. Esegui: {service['restart_command']}",
+                    f"Automatic restart is unavailable. Run: {service['restart_command']}",
+                )
+            )
 
-        self.emit("WARNING", f"Restart requested for {self.systemd_service} from web interface.", "SERVICE")
+        self.emit(
+            "WARNING",
+            self.message(
+                f"Riavvio di {self.systemd_service} richiesto dall'interfaccia Web.",
+                f"Restart requested for {self.systemd_service} from web interface.",
+            ),
+            "SERVICE",
+        )
 
         def restart_after_response():
             time.sleep(0.75)
             try:
                 subprocess.run(["systemctl", "--no-block", "restart", self.systemd_service], check=True, timeout=30)
             except (OSError, subprocess.SubprocessError) as exc:
-                self.emit("ERROR", f"Unable to restart {self.systemd_service}: {exc}", "SERVICE", additional_info=str(exc))
+                self.emit(
+                    "ERROR",
+                    self.message(
+                        f"Impossibile riavviare {self.systemd_service}: {exc}",
+                        f"Unable to restart {self.systemd_service}: {exc}",
+                    ),
+                    "SERVICE",
+                    additional_info=str(exc),
+                )
 
         threading.Thread(target=restart_after_response, name="syseba-service-restart", daemon=True).start()
         return service
@@ -1168,6 +1505,9 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
     def daemon(self):
         return self.daemon_ref
 
+    def message(self, italian, english):
+        return italian if self.daemon.language == "it" else english
+
     def log_message(self, format_string, *args):
         logging.info("web %s - %s", self.address_string(), format_string % args)
 
@@ -1179,10 +1519,12 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 self.send_html(render_dashboard_html(self.daemon.language))
-            elif path == "/logo":
+            elif path in ("/logo", "/favicon.ico"):
                 self.send_file(os.path.join(SCRIPT_DIR, "SySeBa_Logo.webp"))
             elif path == "/webui.js":
                 self.send_file(os.path.join(SCRIPT_DIR, "syseba_web.js"))
+            elif path == "/api/auth":
+                self.send_json({"required": bool(self.auth_token)})
             elif not self.require_auth():
                 return
             elif path == "/api/status":
@@ -1209,11 +1551,17 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
                 relative_path = query.get("path", [""])[0]
                 target = safe_join(self.daemon.config.restore, relative_path)
                 if not os.path.isfile(target):
-                    self.send_error_json(HTTPStatus.NOT_FOUND, "File not found.")
+                    self.send_error_json(
+                        HTTPStatus.NOT_FOUND,
+                        self.message("File non trovato.", "File not found."),
+                    )
                 else:
                     self.send_file(target, download=True)
             else:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+                self.send_error_json(
+                    HTTPStatus.NOT_FOUND,
+                    self.message("Risorsa non trovata.", "Not found."),
+                )
         except Exception as exc:
             self.send_exception_json(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -1226,7 +1574,11 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/config":
                 updated = self.daemon.update_config(data)
                 if self.daemon.language == "it":
-                    message = "Configurazione salvata. Riavvia SySeBa per applicarla." if self.daemon.restart_required else "Configurazione salvata e gia attiva."
+                    message = (
+                        "Configurazione salvata. Riavvia SySeBa per applicarla."
+                        if self.daemon.restart_required
+                        else "Configurazione salvata e già attiva."
+                    )
                 else:
                     message = "Configuration saved. Restart SySeBa to apply it." if self.daemon.restart_required else "Configuration saved and already active."
                 self.send_json({
@@ -1257,14 +1609,22 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
                     "message": "Riavvio del servizio richiesto." if self.daemon.language == "it" else "Service restart requested.",
                 })
             else:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+                self.send_error_json(
+                    HTTPStatus.NOT_FOUND,
+                    self.message("Risorsa non trovata.", "Not found."),
+                )
         except Exception as exc:
             self.send_exception_json(exc, HTTPStatus.BAD_REQUEST)
 
     def read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
         if length > MAX_JSON_BODY:
-            raise ValueError("Request body too large.")
+            raise ValueError(
+                self.message(
+                    "Corpo della richiesta troppo grande.",
+                    "Request body too large.",
+                )
+            )
         body = self.rfile.read(length).decode("utf-8") if length else "{}"
         return json.loads(body or "{}")
 
@@ -1282,7 +1642,13 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
             return True
 
         self.send_json(
-            {"ok": False, "error": "Authentication required."},
+            {
+                "ok": False,
+                "error": self.message(
+                    "Autenticazione richiesta.",
+                    "Authentication required.",
+                ),
+            },
             HTTPStatus.UNAUTHORIZED,
             extra_headers={"WWW-Authenticate": 'Bearer realm="SySeBa"'},
         )
@@ -1337,11 +1703,17 @@ class SySeBaHTTPHandler(BaseHTTPRequestHandler):
         elif isinstance(exc, (ValueError, json.JSONDecodeError)):
             status = HTTPStatus.BAD_REQUEST
             code = "invalid_request"
-        self.send_json({"ok": False, "code": code, "error": str(exc)}, status)
+        error = str(exc)
+        if error == "Invalid path.":
+            error = self.message("Percorso non valido.", "Invalid path.")
+        self.send_json({"ok": False, "code": code, "error": error}, status)
 
     def send_file(self, path, download=False):
         if not os.path.exists(path):
-            self.send_error_json(HTTPStatus.NOT_FOUND, "File not found.")
+            self.send_error_json(
+                HTTPStatus.NOT_FOUND,
+                self.message("File non trovato.", "File not found."),
+            )
             return
         mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
         with open(path, "rb") as file_handle:
@@ -1532,7 +1904,7 @@ def render_dashboard_html(language="it"):
       outline-offset: 2px;
     }
     .notice { margin-top: 10px; color: var(--accent-2); font-weight: 700; }
-    .hide { display: none; }
+    .hide { display: none !important; }
     .path { overflow-wrap: anywhere; }
     .status-ok { color: var(--ok); font-weight: 800; }
     .pill .status-ok { color: var(--ok-dark); }
@@ -1667,7 +2039,7 @@ def render_dashboard_html(language="it"):
       <div class="restart-banner hide" id="restart-banner">
         <div>
           <strong data-i18n="restart_required">Riavvio necessario</strong>
-          <span data-i18n="restart_explanation">La configurazione salvata non e ancora attiva.</span>
+          <span data-i18n="restart_explanation">La configurazione salvata non è ancora attiva.</span>
           <div class="restart-command" id="restart-command"></div>
         </div>
         <button class="primary hide" type="button" id="restart-service" data-i18n="restart_service">Riavvia servizio</button>
@@ -1676,7 +2048,7 @@ def render_dashboard_html(language="it"):
       <div class="grid cols-3" style="margin-top:14px" id="disk"></div>
       <div class="panel" style="margin-top:14px">
         <div class="section-toolbar">
-          <h2 data-i18n="session_activity">Attivita dalla partenza</h2>
+          <h2 data-i18n="session_activity">Attività dalla partenza</h2>
           <div class="freshness" id="session-started"></div>
         </div>
         <dl class="stats-grid" id="activity"></dl>
@@ -1996,59 +2368,125 @@ def start_web_server(daemon, host, port, auth_token=None, auth_source="disabled"
     server = ThreadingHTTPServer((host, port), SySeBaHTTPHandler)
     thread = threading.Thread(target=server.serve_forever, name="syseba-web", daemon=True)
     thread.start()
-    daemon.emit("INFO", f"Web interface listening on http://{host}:{port}", "WEB")
+    daemon.emit(
+        "INFO",
+        daemon.message(
+            f"Interfaccia Web in ascolto su http://{host}:{port}",
+            f"Web interface listening on http://{host}:{port}",
+        ),
+        "WEB",
+    )
     if auth_token:
-        daemon.emit("INFO", f"Web authentication enabled ({auth_source} token).", "WEB")
+        daemon.emit(
+            "INFO",
+            daemon.message(
+                f"Autenticazione Web attiva (token: {auth_source}).",
+                f"Web authentication enabled ({auth_source} token).",
+            ),
+            "WEB",
+        )
     else:
-        daemon.emit("WARNING", "Web authentication disabled by explicit request.", "WEB")
+        daemon.emit(
+            "WARNING",
+            daemon.message(
+                "Autenticazione Web disabilitata su richiesta esplicita.",
+                "Web authentication disabled by explicit request.",
+            ),
+            "WEB",
+        )
     return server
 
 
 def create_systemd_service(
     config_path=None,
-    with_web=False,
-    web_host=DEFAULT_WEB_HOST,
+    web_host=DEFAULT_SERVICE_WEB_HOST,
     web_port=DEFAULT_WEB_PORT,
-    web_token_file=None,
+    web_token_file=DEFAULT_WEB_TOKEN_FILE,
     no_web_auth=False,
+    language="it",
+    install_dir=DEFAULT_INSTALL_DIR,
+    unit_path=DEFAULT_SYSTEMD_UNIT,
+    python_executable="/usr/bin/python3",
+    systemctl_executable="systemctl",
 ):
-    command = ["/usr/bin/python3", "/opt/syseba/syseba.py", "--silent"]
+    install_dir = os.path.abspath(install_dir)
+    unit_path = os.path.abspath(unit_path)
+    token_path = os.path.abspath(web_token_file or DEFAULT_WEB_TOKEN_FILE)
+    command = [
+        python_executable,
+        os.path.join(install_dir, "syseba.py"),
+        "--silent",
+        "--web",
+        "--web-host",
+        web_host,
+        "--web-port",
+        str(web_port),
+        "--lang",
+        language,
+    ]
     if config_path:
         command.extend(["--config", config_path])
-    if with_web:
-        command.extend(["--web", "--web-host", web_host, "--web-port", str(web_port)])
-        if web_token_file:
-            command.extend(["--web-token-file", web_token_file])
-        if no_web_auth:
-            command.append("--no-web-auth")
+    token_created = False
+    if no_web_auth:
+        command.append("--no-web-auth")
+    else:
+        _, token_path, token_created = ensure_web_token_file(token_path, language)
+        command.extend(["--web-token-file", token_path])
     exec_start = " ".join(shlex.quote(part) for part in command)
     service_content = f"""[Unit]
 Description={APP_TITLE}
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
+Type=simple
 ExecStart={exec_start}
-WorkingDirectory=/opt/syseba
+WorkingDirectory={install_dir}
+Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=5
+TimeoutStopSec=45
 User=root
 Group=root
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/opt/syseba /var/log -/storage -/backup -/restore -/dati -/mnt -/media -/srv
+ReadWritePaths={install_dir} /var/log -/storage -/backup -/restore -/dati -/mnt -/media -/srv
 UMask=0077
 
 [Install]
 WantedBy=multi-user.target
 """
 
-    with open("/etc/systemd/system/syseba.service", "w", encoding="utf-8") as service_file:
-        service_file.write(service_content)
-    subprocess.run(["systemctl", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "enable", "syseba.service"], check=True)
-    print("Systemd service created and enabled: syseba.service")
+    atomic_write_text(unit_path, service_content, mode=0o644)
+    service_name = os.path.basename(unit_path)
+    subprocess.run([systemctl_executable, "daemon-reload"], check=True)
+    subprocess.run([systemctl_executable, "enable", service_name], check=True)
+    if language == "it":
+        print(f"Servizio systemd creato e abilitato: {service_name}")
+        print(f"Web UI LAN: http://<IP-del-server>:{web_port}")
+        if no_web_auth:
+            print("ATTENZIONE: autenticazione Web disabilitata.")
+        else:
+            action = "creato" if token_created else "riutilizzato"
+            print(f"Token Web {action}: {token_path}")
+    else:
+        print(f"Systemd service created and enabled: {service_name}")
+        print(f"LAN Web UI: http://<server-IP>:{web_port}")
+        if no_web_auth:
+            print("WARNING: Web authentication is disabled.")
+        else:
+            action = "created" if token_created else "reused"
+            print(f"Web token {action}: {token_path}")
+    return {
+        "service": service_name,
+        "unit_path": unit_path,
+        "web_host": web_host,
+        "web_port": web_port,
+        "token_path": None if no_web_auth else token_path,
+        "token_created": token_created,
+    }
 
 
 def valid_port(value):
@@ -2076,16 +2514,28 @@ def build_parser(language="it"):
     italian = language == "it"
     help_text = {
         "command": "Comando operativo" if italian else "Operational command",
-        "daemon": "Crea e abilita il servizio systemd (compatibilita)" if italian else "Create and enable the systemd service (compatibility option)",
+        "daemon": (
+            "Crea e abilita il servizio systemd con Web UI automatica"
+            if italian
+            else "Create and enable the systemd service with automatic Web UI"
+        ),
         "silent": "Avvia senza dashboard console" if italian else "Run without the console dashboard",
         "config": "Percorso di un file di configurazione alternativo" if italian else "Alternate configuration file path",
         "lang": "Lingua di CLI, console e Web UI" if italian else "Language for CLI, console, and Web UI",
         "web": "Avvia la Web UI insieme al watcher" if italian else "Start the Web UI with the watcher",
         "web_only": "Avvia solo la Web UI, senza watcher" if italian else "Start only the Web UI, without the watcher",
-        "host": "Indirizzo di ascolto Web" if italian else "Web listen address",
-        "port": "Porta Web" if italian else "Web port",
+        "host": (
+            "Indirizzo Web; manuale: 127.0.0.1, servizio: 0.0.0.0"
+            if italian
+            else "Web address; manual default: 127.0.0.1, service default: 0.0.0.0"
+        ),
+        "port": "Porta Web (predefinita: 8765)" if italian else "Web port (default: 8765)",
         "token": "Token richiesto dalla Web UI" if italian else "Token required by the Web UI",
-        "token_file": "File contenente il token Web" if italian else "File containing the Web token",
+        "token_file": (
+            "File persistente del token Web (creato automaticamente con permessi 0600)"
+            if italian
+            else "Persistent Web token file (created automatically with mode 0600)"
+        ),
         "no_auth": "Disabilita autenticazione Web (non sicuro)" if italian else "Disable Web authentication (unsafe)",
         "no_sync": "Salta la sincronizzazione iniziale" if italian else "Skip initial synchronization",
         "lock": "Percorso del lock file" if italian else "Lock file path",
@@ -2106,10 +2556,10 @@ def build_parser(language="it"):
     parser.add_argument("--lang", choices=["it", "en"], default=language, help=help_text["lang"])
     parser.add_argument("--web", action="store_true", help=help_text["web"])
     parser.add_argument("--web-only", action="store_true", help=help_text["web_only"])
-    parser.add_argument("--web-host", default=DEFAULT_WEB_HOST, help=help_text["host"])
+    parser.add_argument("--web-host", help=help_text["host"])
     parser.add_argument("--web-port", type=valid_port, default=DEFAULT_WEB_PORT, help=help_text["port"])
     parser.add_argument("--web-token", help=help_text["token"])
-    parser.add_argument("--web-token-file", default=DEFAULT_WEB_TOKEN_FILE, help=help_text["token_file"])
+    parser.add_argument("--web-token-file", help=help_text["token_file"])
     parser.add_argument("--no-web-auth", action="store_true", help=help_text["no_auth"])
     parser.add_argument("--no-initial-sync", action="store_true", help=help_text["no_sync"])
     parser.add_argument("--lockfile", default=DEFAULT_LOCKFILE, help=help_text["lock"])
@@ -2129,7 +2579,8 @@ def build_parser(language="it"):
     return parser
 
 
-def validate_config(config):
+def validate_config(config, language="en"):
+    italian = language == "it"
     errors = []
     warnings = []
     paths = {
@@ -2138,9 +2589,19 @@ def validate_config(config):
         "restore": os.path.realpath(config.restore),
     }
     if not os.path.isdir(config.source):
-        errors.append(f"source does not exist or is not a directory: {config.source}")
+        errors.append(
+            (
+                f"la sorgente non esiste o non è una directory: {config.source}"
+                if italian
+                else f"source does not exist or is not a directory: {config.source}"
+            )
+        )
     if len(set(paths.values())) != len(paths):
-        errors.append("source, backup and restore must be different directories")
+        errors.append(
+            "sorgente, backup e restore devono essere directory diverse"
+            if italian
+            else "source, backup and restore must be different directories"
+        )
     path_names = list(paths)
     for index, first_name in enumerate(path_names):
         for second_name in path_names[index + 1:]:
@@ -2151,21 +2612,43 @@ def validate_config(config):
             try:
                 common = os.path.commonpath([first, second])
                 if common in (first, second):
-                    errors.append(f"{first_name} and {second_name} cannot contain one another")
+                    errors.append(
+                        (
+                            f"{first_name} e {second_name} non possono contenersi a vicenda"
+                            if italian
+                            else f"{first_name} and {second_name} cannot contain one another"
+                        )
+                    )
             except ValueError:
                 pass
     try:
         log_path = os.path.realpath(config.log_file)
         if os.path.commonpath([paths["source"], log_path]) == paths["source"]:
-            errors.append("log file cannot be inside source")
+            errors.append(
+                "il file di log non può trovarsi nella sorgente"
+                if italian
+                else "log file cannot be inside source"
+            )
     except ValueError:
         pass
     if config.threads < 1 or config.threads > 64:
-        errors.append("threads must be between 1 and 64")
+        errors.append(
+            "il numero di thread deve essere compreso tra 1 e 64"
+            if italian
+            else "threads must be between 1 and 64"
+        )
     if not os.path.exists(config.backup):
-        warnings.append(f"backup will be created: {config.backup}")
+        warnings.append(
+            f"la directory di backup verrà creata: {config.backup}"
+            if italian
+            else f"backup will be created: {config.backup}"
+        )
     if not os.path.exists(config.restore):
-        warnings.append(f"restore will be created: {config.restore}")
+        warnings.append(
+            f"la directory di restore verrà creata: {config.restore}"
+            if italian
+            else f"restore will be created: {config.restore}"
+        )
     return errors, warnings
 
 
@@ -2189,11 +2672,11 @@ def execute_cli_command(args, config, lang):
         if args.output_json:
             print(json.dumps(payload, indent=2))
         else:
-            state = lang.get("RUNNING", "RUNNING") if lock["running"] else "STOPPED"
+            state = lang.get("RUNNING", "RUNNING") if lock["running"] else lang.get("STOPPED", "STOPPED")
             print(f"SySeBa: {state}" + (f" (PID {lock['pid']})" if lock["pid"] else ""))
             for name, item in payload["disk"].items():
                 detail = f"{item['used_percent']:.2f}%" if item["exists"] else lang.get("NOT_FOUND", "not found")
-                print(f"{name}: {item['path']} [{detail}]")
+                print(f"{lang.get(name.upper(), name)}: {item['path']} [{detail}]")
         return 0
 
     if args.command == "logs":
@@ -2205,16 +2688,16 @@ def execute_cli_command(args, config, lang):
         return 0
 
     if args.command == "config-check":
-        errors, warnings = validate_config(config)
+        errors, warnings = validate_config(config, args.lang)
         payload = {"ok": not errors, "errors": errors, "warnings": warnings, "config": config.as_public_dict()}
         if args.output_json:
             print(json.dumps(payload, indent=2))
         else:
-            print("OK" if not errors else "ERROR")
+            print("OK" if not errors else lang.get("ERROR", "ERROR"))
             for warning in warnings:
-                print(f"WARNING: {warning}")
+                print(f"{lang.get('WARNING', 'WARNING')}: {warning}")
             for error in errors:
-                print(f"ERROR: {error}")
+                print(f"{lang.get('ERROR', 'ERROR')}: {error}")
         return 0 if not errors else 2
 
     if args.command == "restore-list":
@@ -2222,18 +2705,29 @@ def execute_cli_command(args, config, lang):
         if args.output_json:
             print(json.dumps(result, indent=2))
         elif result.get("is_file"):
-            print(f"FILE  {result['size_human']:>10}  {result['mtime']}  {result['path']}")
+            print(f"{lang.get('FILE', 'FILE')}  {result['size_human']:>10}  {result['mtime']}  {result['path']}")
         else:
-            print(f"{result['path'] or '/'} - {result['total']} items - page {result['page']}/{result['pages']}")
+            print(
+                f"{result['path'] or '/'} - {result['total']} {lang.get('ITEMS', 'items')} "
+                f"- {lang.get('PAGE', 'Page')} {result['page']}/{result['pages']}"
+            )
             for item in result["items"]:
-                kind = "DIR " if item["is_dir"] else "FILE"
-                conflict = " [destination exists]" if item["destination_exists"] else ""
+                kind = lang.get("DIRECTORY", "DIR") if item["is_dir"] else lang.get("FILE", "FILE")
+                conflict = (
+                    f" [{lang.get('DESTINATION_EXISTS', 'destination exists')}]"
+                    if item["destination_exists"]
+                    else ""
+                )
                 print(f"{kind}  {item['size_human']:>10}  {item['mtime']}  {item['path']}{conflict}")
         return 0
 
     if args.command == "restore-copy":
         if not args.path:
-            raise ValueError("restore-copy requires --path")
+            raise ValueError(
+                "restore-copy richiede --path"
+                if args.lang == "it"
+                else "restore-copy requires --path"
+            )
         strategy = "rename" if args.rename else ("overwrite" if args.overwrite else "fail")
         daemon.start_web_only()
         try:
@@ -2259,17 +2753,17 @@ def main():
 
     if args.create_daemon or args.command == "service-install":
         create_systemd_service(
-            args.config,
-            args.web,
-            args.web_host,
-            args.web_port,
-            args.web_token_file,
-            args.no_web_auth,
+            config_path=args.config,
+            web_host=args.web_host or DEFAULT_SERVICE_WEB_HOST,
+            web_port=args.web_port,
+            web_token_file=args.web_token_file or DEFAULT_WEB_TOKEN_FILE,
+            no_web_auth=args.no_web_auth,
+            language=args.lang,
         )
         return
 
     try:
-        config = SySeBaConfig.load(args.config)
+        config = SySeBaConfig.load(args.config, args.lang)
         lang = load_language(lang=args.lang)
     except Exception as exc:
         parser.exit(2, f"{'Errore' if args.lang == 'it' else 'Error'}: {exc}\n")
@@ -2308,16 +2802,40 @@ def main():
             daemon.start()
 
         if args.web or args.web_only:
-            web_token, web_token_source = load_web_token(args.web_token, args.web_token_file, args.no_web_auth)
-            web_server = start_web_server(daemon, args.web_host, args.web_port, web_token, web_token_source)
-            print(f"Web interface: http://{args.web_host}:{args.web_port}")
-            if web_token:
-                if web_token_source == "generated":
-                    print(f"Web token: {web_token}")
-                else:
-                    print(f"Web token source: {web_token_source}")
+            web_host = args.web_host or DEFAULT_WEB_HOST
+            web_token, web_token_source = load_web_token(
+                args.web_token,
+                args.web_token_file,
+                args.no_web_auth,
+                args.lang,
+            )
+            web_server = start_web_server(daemon, web_host, args.web_port, web_token, web_token_source)
+            if args.lang == "it":
+                print(f"Interfaccia Web: http://{web_host}:{args.web_port}")
             else:
-                print("WARNING: web authentication is disabled.")
+                print(f"Web interface: http://{web_host}:{args.web_port}")
+            if web_token:
+                if web_token_source in ("generated-file", "file"):
+                    token_path = os.path.abspath(
+                        args.web_token_file
+                        or os.environ.get("SYSEBA_WEB_TOKEN_FILE", "").strip()
+                        or DEFAULT_WEB_TOKEN_FILE
+                    )
+                    if args.lang == "it":
+                        action = "creato" if web_token_source == "generated-file" else "caricato"
+                        print(f"Token Web {action} da: {token_path}")
+                    else:
+                        action = "created" if web_token_source == "generated-file" else "loaded"
+                        print(f"Web token {action} from: {token_path}")
+                else:
+                    label = "Origine token Web" if args.lang == "it" else "Web token source"
+                    print(f"{label}: {web_token_source}")
+            else:
+                print(
+                    "ATTENZIONE: autenticazione Web disabilitata."
+                    if args.lang == "it"
+                    else "WARNING: Web authentication is disabled."
+                )
 
         if not args.silent and not args.web_only:
             ConsoleDashboard(daemon, args.console_refresh).run()
@@ -2328,7 +2846,7 @@ def main():
         daemon.stop_event.set()
     except Exception as exc:
         logging.error(str(exc))
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"{'Errore' if args.lang == 'it' else 'Error'}: {exc}", file=sys.stderr)
         sys.exit(1)
     finally:
         if web_server is not None:

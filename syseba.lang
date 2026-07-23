@@ -1,15 +1,14 @@
-LABEL;it;en
 CLOCK;Ora;Time
 SPACE_USED;Spazio usato;Used space
 LOG;Log;Log
-ROOT_REQUIRED;Questo script deve essere eseguito come root;This script must be run as root
-DIRECTORY_MISSING;La directory non esiste;The directory does not exist
+ROOT_REQUIRED;Questo programma deve essere eseguito come root;This program must be run as root
 SHUTDOWN;Chiusura in corso;Shutting down
 STATUS;Stato;Status
 PATHS;Percorsi;Paths
 PROCESS;Processo;Process
 RECENT_EVENTS;Ultimi eventi;Recent events
 RUNNING;ATTIVO;RUNNING
+STOPPED;FERMO;STOPPED
 WEB_ONLY;SOLO WEB;WEB ONLY
 SOURCE;SORGENTE;SOURCE
 BACKUP;BACKUP;BACKUP
@@ -21,7 +20,7 @@ RESTORED;Ripristinati;Restored
 ERRORS;Errori;Errors
 QUEUE;Coda;Queue
 THREADS;Thread;Threads
-INITIAL_SYNC;Sync iniziale;Initial sync
+INITIAL_SYNC;Sincronizzazione iniziale;Initial sync
 SYNC_PENDING;in attesa;pending
 SYNC_RUNNING;in corso;running
 SYNC_COMPLETED;completata;completed
@@ -34,3 +33,10 @@ CONFIG_RESTART;Configurazione salvata: riavvio necessario.;Configuration saved: 
 CLEAN_EXIT;Ctrl+C per uscire in modo pulito.;Ctrl+C to exit cleanly.
 NOT_FOUND;non trovato;not found
 NO_EVENTS;Nessun evento recente.;No recent events.
+WARNING;AVVISO;WARNING
+ERROR;ERRORE;ERROR
+FILE;FILE;FILE
+DIRECTORY;CARTELLA;DIR
+ITEMS;elementi;items
+PAGE;Pagina;Page
+DESTINATION_EXISTS;destinazione esistente;destination exists

@@ -1,7 +1,11 @@
 *.lock
 *.log
 *.db
+*.db-*
+syseba_web.token
+syseba-backups/
 __pycache__/
+.pytest_cache/
 *.py[cod]
 dist/
 *.tgz

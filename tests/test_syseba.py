@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -122,6 +123,14 @@ class SySeBaSecurityTests(unittest.TestCase):
             finally:
                 os.chdir(original_directory)
 
+    def test_explicit_missing_config_never_falls_back_to_a_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.conf"
+            with self.assertRaisesRegex(FileNotFoundError, "specificato non trovato"):
+                syseba.SySeBaConfig.load(str(missing), language="it")
+            with self.assertRaisesRegex(FileNotFoundError, "Specified config file not found"):
+                syseba.SySeBaConfig.load(str(missing), language="en")
+
     def test_web_only_persists_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -172,18 +181,17 @@ class SySeBaSecurityTests(unittest.TestCase):
             )
             try:
                 url = f"http://127.0.0.1:{port}/api/status"
+                auth_url = f"http://127.0.0.1:{port}/api/auth"
                 for _ in range(30):
                     try:
-                        urllib.request.urlopen(url, timeout=0.2)
-                    except urllib.error.HTTPError as error:
-                        if error.code == 401:
-                            error.close()
-                            break
-                        error.close()
+                        with urllib.request.urlopen(auth_url, timeout=0.2) as response:
+                            auth_state = json.loads(response.read().decode("utf-8"))
+                        break
                     except OSError:
                         time.sleep(0.1)
                 else:
-                    self.fail("web server did not start with protected API")
+                    self.fail("web server did not expose its authentication state")
+                self.assertTrue(auth_state["required"])
 
                 with self.assertRaises(urllib.error.HTTPError) as context:
                     urllib.request.urlopen(url, timeout=2)
@@ -226,6 +234,131 @@ class SySeBaSecurityTests(unittest.TestCase):
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
+
+    def test_web_token_file_is_persistent_and_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "syseba_web.token"
+            first_token, first_path, first_created = syseba.ensure_web_token_file(str(token_file))
+            second_token, second_path, second_created = syseba.ensure_web_token_file(str(token_file))
+
+            self.assertTrue(first_created)
+            self.assertFalse(second_created)
+            self.assertEqual(first_token, second_token)
+            self.assertEqual(first_path, second_path)
+            self.assertEqual(token_file.read_text(encoding="utf-8").strip(), first_token)
+            self.assertGreaterEqual(len(first_token), 32)
+            if os.name != "nt":
+                self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
+
+    def test_web_token_file_rejects_symbolic_links_when_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.token"
+            target.write_text("do-not-read\n", encoding="utf-8")
+            link = root / "syseba_web.token"
+            try:
+                os.symlink(target, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are not available for this test user")
+
+            with self.assertRaises(ValueError):
+                syseba.ensure_web_token_file(str(link))
+
+    def test_systemd_service_always_enables_protected_lan_web(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_dir = root / "syseba"
+            install_dir.mkdir()
+            unit_path = root / "syseba.service"
+            token_path = install_dir / "syseba_web.token"
+
+            with mock.patch.object(syseba.subprocess, "run") as run, mock.patch("builtins.print"):
+                result = syseba.create_systemd_service(
+                    web_host="0.0.0.0",
+                    web_port=8765,
+                    web_token_file=str(token_path),
+                    language="en",
+                    install_dir=str(install_dir),
+                    unit_path=str(unit_path),
+                    python_executable="/usr/bin/python3",
+                )
+
+            unit = unit_path.read_text(encoding="utf-8")
+            self.assertIn("Wants=network-online.target", unit)
+            self.assertIn("Environment=PYTHONUNBUFFERED=1", unit)
+            self.assertIn("--silent --web --web-host 0.0.0.0 --web-port 8765 --lang en", unit)
+            self.assertIn(f"--web-token-file {syseba.shlex.quote(str(token_path))}", unit)
+            self.assertNotIn("--no-web-auth", unit)
+            self.assertTrue(token_path.is_file())
+            self.assertTrue(result["token_created"])
+            self.assertEqual(result["web_port"], 8765)
+            run.assert_has_calls([
+                mock.call(["systemctl", "daemon-reload"], check=True),
+                mock.call(["systemctl", "enable", "syseba.service"], check=True),
+            ])
+
+    def test_quick_update_restores_old_unit_when_web_migration_fails(self):
+        if os.name == "nt":
+            candidates = [
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe",
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe",
+            ]
+            bash = next((str(path) for path in candidates if path.exists()), None)
+        else:
+            bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash is not available")
+
+        script = r'''
+set -Eeuo pipefail
+source ./syseba-maintenance.sh
+
+fixture="$(mktemp -d)"
+INSTALL_DIR="$fixture/install"
+UNIT_FILE="$fixture/syseba.service"
+SERVICE_NAME="syseba.service"
+SYSTEMCTL_BIN="true"
+mkdir -p "$INSTALL_DIR"
+printf 'placeholder\n' > "$INSTALL_DIR/syseba.py"
+printf 'old-unit\n' > "$UNIT_FILE"
+
+resolve_target_commit() { printf 'same-commit\n'; }
+installed_identity() { printf 'same-commit\n'; }
+verify_install() { return 0; }
+service_is_active() { return 0; }
+stop_service() { return 0; }
+ensure_no_unmanaged_process() { return 0; }
+configure_web_service() { printf 'new-web-unit\n' > "$UNIT_FILE"; }
+cmd_logs() { return 0; }
+
+start_count=0
+start_service() {
+    start_count=$((start_count + 1))
+    if [[ "$start_count" -eq 1 ]]; then
+        return 1
+    fi
+    grep -Fqx 'old-unit' "$UNIT_FILE"
+}
+
+set +e
+(
+    cmd_quick_update main
+)
+status=$?
+set -e
+
+grep -Fqx 'old-unit' "$UNIT_FILE"
+rm -rf -- "$fixture"
+[[ "$status" -eq 1 ]]
+'''
+        result = subprocess.run(
+            [bash, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class SySeBaUxTests(unittest.TestCase):
@@ -342,6 +475,18 @@ class SySeBaUxTests(unittest.TestCase):
             self.assertEqual(changed["saved"]["threads"], 7)
             self.assertIn("threads", changed["changes"])
 
+    def test_invalid_config_update_is_rejected_without_changing_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = self.write_config(root)
+            config = syseba.SySeBaConfig.load(config_path)
+            original = config_path.read_text(encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "cannot contain one another"):
+                config.save({"backup": str(Path(config.source) / "nested")}, language="en")
+
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+
     def test_console_layout_respects_terminal_width_and_height(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -366,7 +511,20 @@ class SySeBaUxTests(unittest.TestCase):
         self.assertIn('role="tablist"', html)
         self.assertIn('aria-live="polite"', html)
         self.assertIn('src="/webui.js"', html)
+        self.assertIn(".hide { display: none !important; }", html)
         self.assertNotIn("onclick=", html)
+
+    def test_language_file_covers_console_and_cli_labels(self):
+        italian = syseba.load_language(lang="it")
+        english = syseba.load_language(lang="en")
+        expected = {
+            "CLOCK", "STATUS", "RUNNING", "STOPPED", "SOURCE", "BACKUP", "RESTORE",
+            "INITIAL_SYNC", "WARNING", "ERROR", "FILE", "DIRECTORY", "ITEMS", "PAGE",
+        }
+        self.assertTrue(expected.issubset(italian))
+        self.assertTrue(expected.issubset(english))
+        self.assertEqual(italian["STOPPED"], "FERMO")
+        self.assertEqual(english["STOPPED"], "STOPPED")
 
     def test_cli_config_check_and_restore_list_json(self):
         with tempfile.TemporaryDirectory() as tmp:

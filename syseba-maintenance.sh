@@ -4,7 +4,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="1.1"
+SCRIPT_VERSION="1.2"
 LAUNCH_DIR="$(pwd -P)"
 
 INSTALL_DIR="${SYSEBA_INSTALL_DIR:-/opt/syseba}"
@@ -17,6 +17,9 @@ DEFAULT_REF="${SYSEBA_REF:-main}"
 CONFIG_PATH="${SYSEBA_CONFIG_PATH:-${INSTALL_DIR}/syseba.conf}"
 DB_PATH="${SYSEBA_DB_PATH:-${INSTALL_DIR}/syseba_logs.db}"
 TOKEN_PATH="${SYSEBA_TOKEN_PATH:-${INSTALL_DIR}/syseba_web.token}"
+WEB_HOST="${SYSEBA_WEB_HOST:-0.0.0.0}"
+WEB_PORT="${SYSEBA_WEB_PORT:-8765}"
+APP_LANGUAGE="${SYSEBA_LANG:-it}"
 SYSTEMCTL_BIN="${SYSEBA_SYSTEMCTL_BIN:-systemctl}"
 GIT_BIN="${SYSEBA_GIT_BIN:-git}"
 TAR_BIN="${SYSEBA_TAR_BIN:-tar}"
@@ -79,6 +82,7 @@ Environment overrides:
   SYSEBA_MAINTENANCE_LOCK,
   SYSEBA_UNIT_FILE, SYSEBA_REPO_URL, SYSEBA_REF,
   SYSEBA_CONFIG_PATH, SYSEBA_DB_PATH, SYSEBA_TOKEN_PATH,
+  SYSEBA_WEB_HOST, SYSEBA_WEB_PORT, SYSEBA_LANG,
   SYSEBA_PYTHON_BIN, SYSEBA_SYSTEMCTL_BIN, SYSEBA_HEALTH_WAIT
 
 The source, backup and restore data trees configured in syseba.conf are never copied,
@@ -121,6 +125,10 @@ validate_settings() {
     [[ "$UNIT_FILE" == /* && "$UNIT_FILE" != "/" ]] || die "Unsafe unit path: $UNIT_FILE"
     [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "Invalid systemd service name: $SERVICE_NAME"
     [[ "$HEALTH_WAIT" =~ ^[0-9]+$ ]] || die "SYSEBA_HEALTH_WAIT must be a non-negative integer"
+    [[ "$WEB_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || die "Invalid Web listen address: $WEB_HOST"
+    [[ "$WEB_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || die "SYSEBA_WEB_PORT must be between 1 and 65535"
+    (( 10#$WEB_PORT <= 65535 )) || die "SYSEBA_WEB_PORT must be between 1 and 65535"
+    [[ "$APP_LANGUAGE" == "it" || "$APP_LANGUAGE" == "en" ]] || die "SYSEBA_LANG must be it or en"
 }
 
 validate_backup_location() {
@@ -601,6 +609,60 @@ restore_unit_from_backup() {
     "$SYSTEMCTL_BIN" daemon-reload
 }
 
+configure_web_service() {
+    local default_unit="/etc/systemd/system/syseba.service"
+    if [[ "$SERVICE_NAME" != "syseba.service" || "$UNIT_FILE" != "$default_unit" ]]; then
+        warn "Automatic Web service migration requires syseba.service at $default_unit."
+        return 1
+    fi
+
+    local unit_backup had_unit=0
+    unit_backup="$(mktemp)"
+    if [[ -e "$UNIT_FILE" || -L "$UNIT_FILE" ]]; then
+        cp -a -- "$UNIT_FILE" "$unit_backup"
+        had_unit=1
+    fi
+
+    log "Configuring the systemd service with automatic Web UI on ${WEB_HOST}:${WEB_PORT}..."
+    if ! "$PYTHON_BIN" "$INSTALL_DIR/syseba.py" service-install \
+        --config "$CONFIG_PATH" \
+        --lang "$APP_LANGUAGE" \
+        --web-host "$WEB_HOST" \
+        --web-port "$WEB_PORT" \
+        --web-token-file "$TOKEN_PATH"; then
+        warn "Unable to generate the Web-enabled systemd service."
+        if [[ "$had_unit" -eq 1 ]]; then
+            cp -a -- "$unit_backup" "$UNIT_FILE"
+        else
+            rm -f -- "$UNIT_FILE"
+        fi
+        "$SYSTEMCTL_BIN" daemon-reload || true
+        rm -f -- "$unit_backup"
+        return 1
+    fi
+
+    if ! grep -Eq -- '(^|[[:space:]])--web([[:space:]]|$)' "$UNIT_FILE" ||
+        ! grep -Fq -- "--web-host ${WEB_HOST}" "$UNIT_FILE" ||
+        ! grep -Fq -- "--web-port ${WEB_PORT}" "$UNIT_FILE" ||
+        ! grep -Fq -- "--web-token-file ${TOKEN_PATH}" "$UNIT_FILE" ||
+        [[ ! -s "$TOKEN_PATH" ]]; then
+        warn "The generated service did not pass Web autostart validation."
+        if [[ "$had_unit" -eq 1 ]]; then
+            cp -a -- "$unit_backup" "$UNIT_FILE"
+        else
+            rm -f -- "$UNIT_FILE"
+        fi
+        "$SYSTEMCTL_BIN" daemon-reload || true
+        rm -f -- "$unit_backup"
+        return 1
+    fi
+
+    chmod 600 "$TOKEN_PATH"
+    rm -f -- "$unit_backup"
+    log "Web UI autostart ready: http://<server-ip>:${WEB_PORT}"
+    log "Web token file: ${TOKEN_PATH}"
+}
+
 auto_rollback_directory() {
     local quarantine="$1"
     local backup_dir="$2"
@@ -689,10 +751,13 @@ cmd_update() {
 
     chmod 750 "$INSTALL_DIR/syseba-maintenance.sh" 2>/dev/null || true
     rm -f -- "$INSTALL_DIR"/*.lock 2>/dev/null || true
-    restore_unit_from_backup "$backup_dir"
 
     if [[ "$was_active" -eq 1 || "$force_start" -eq 1 ]]; then
         should_start=1
+    fi
+    if ! configure_web_service; then
+        auto_rollback_directory "$quarantine" "$backup_dir" "$should_start"
+        die "Update failed while enabling Web UI autostart; automatic rollback completed."
     fi
     if [[ "$should_start" -eq 1 ]]; then
         if ! start_service; then
@@ -709,7 +774,7 @@ cmd_update() {
 
 cmd_quick_update() {
     local ref="${1:-$DEFAULT_REF}"
-    local current target
+    local current target unit_before="" had_unit=0 was_active=0
     [[ -f "$INSTALL_DIR/syseba.py" ]] || die "syseba.py not found in $INSTALL_DIR"
 
     validate_git_ref "$ref"
@@ -723,14 +788,42 @@ cmd_quick_update() {
     if [[ "$current" == "$target" ]]; then
         log "The installed Git revision is already current; verifying it before restart."
         verify_install "$INSTALL_DIR"
+
+        unit_before="$(mktemp)"
+        if [[ -e "$UNIT_FILE" || -L "$UNIT_FILE" ]]; then
+            cp -a -- "$UNIT_FILE" "$unit_before"
+            had_unit=1
+        fi
         if service_is_active; then
+            was_active=1
             stop_service
             EXIT_RESTART_SERVICE=1
         else
             ensure_no_unmanaged_process
         fi
-        start_service || die "The installed version passed validation but the service did not start."
+
+        if ! configure_web_service; then
+            rm -f -- "$unit_before"
+            die "The installed version is valid, but Web UI autostart configuration failed."
+        fi
+        if ! start_service; then
+            warn "The Web-enabled unit failed to start; restoring the previous unit."
+            "$SYSTEMCTL_BIN" stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+            if [[ "$had_unit" -eq 1 ]]; then
+                cp -a -- "$unit_before" "$UNIT_FILE"
+            else
+                rm -f -- "$UNIT_FILE"
+            fi
+            "$SYSTEMCTL_BIN" daemon-reload
+            EXIT_RESTART_SERVICE=0
+            if [[ "$had_unit" -eq 1 && "$was_active" -eq 1 ]]; then
+                start_service || die "Web migration failed and the original service could not be restarted."
+            fi
+            rm -f -- "$unit_before"
+            die "Web migration failed; the previous systemd unit was restored."
+        fi
         EXIT_RESTART_SERVICE=0
+        rm -f -- "$unit_before"
         printf 'No update was required; no redundant snapshot was created.\n'
     else
         cmd_update "$target" 1
