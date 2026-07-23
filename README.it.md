@@ -64,6 +64,22 @@ Esegui `scripts/build-release.sh` da Linux/WSL oppure
 `scripts/build-release.ps1` da Windows. Gli artefatti finiscono in `dist/`;
 gli script non pubblicano e non eseguono push.
 
+### GitHub Packages
+
+Gli stessi artefatti verificati sono disponibili nel pacchetto OCI
+[`ghcr.io/okno/syseba-packages`](https://github.com/users/okno/packages/container/package/syseba-packages).
+Il contenitore trasporta file statici e non e un servizio da eseguire:
+
+```bash
+docker pull ghcr.io/okno/syseba-packages:2.0.0
+container=$(docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true)
+docker cp "$container:/packages" ./syseba-packages
+docker rm "$container"
+```
+
+Verifica i file estratti con
+`sha256sum -c syseba-packages/SHA256SUMS`.
+
 ## Installazione Linux
 
 Da pacchetto:

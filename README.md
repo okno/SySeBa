@@ -63,6 +63,21 @@ Run `scripts/build-release.sh` under Linux/WSL, or
 `scripts/build-release.ps1` from Windows. Artifacts are written to `dist/`;
 the scripts never publish or push anything.
 
+### GitHub Packages
+
+The same verified artifacts are mirrored in the
+[`ghcr.io/okno/syseba-packages`](https://github.com/users/okno/packages/container/package/syseba-packages)
+OCI package. It is a static artifact carrier, not a runtime container:
+
+```bash
+docker pull ghcr.io/okno/syseba-packages:2.0.0
+container=$(docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true)
+docker cp "$container:/packages" ./syseba-packages
+docker rm "$container"
+```
+
+Validate the extracted files with `sha256sum -c syseba-packages/SHA256SUMS`.
+
 ## Linux Install
 
 Package install:

@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+
+FROM scratch
+
+ARG SYSEBA_VERSION
+ARG SYSEBA_REVISION
+
+LABEL org.opencontainers.image.title="SySeBa release packages"
+LABEL org.opencontainers.image.description="Verified SySeBa release artifacts for Linux, Windows, and macOS"
+LABEL org.opencontainers.image.source="https://github.com/okno/SySeBa"
+LABEL org.opencontainers.image.url="https://github.com/okno/SySeBa/releases"
+LABEL org.opencontainers.image.documentation="https://github.com/okno/SySeBa/blob/main/docs/PACKAGING.md"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.version="${SYSEBA_VERSION}"
+LABEL org.opencontainers.image.revision="${SYSEBA_REVISION}"
+
+COPY . /packages/

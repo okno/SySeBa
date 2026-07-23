@@ -19,6 +19,37 @@ SHA256SUMS
 Names can contain CPack platform suffix differences; the manifest records the
 actual final names, sizes, hashes, compiler identity, and test status.
 
+## GitHub Packages OCI Bundle
+
+GitHub Packages does not provide a generic binary registry. The complete
+release directory is therefore mirrored as a `scratch` OCI image at
+`ghcr.io/okno/syseba-packages`. The image contains no operating system or
+runtime process; every release asset is stored below `/packages`.
+
+Build from an already verified release directory:
+
+```bash
+docker build \
+  --file packaging/oci/Dockerfile.packages \
+  --build-arg SYSEBA_VERSION=2.0.0 \
+  --build-arg SYSEBA_REVISION="$(git rev-parse HEAD)" \
+  --tag ghcr.io/okno/syseba-packages:2.0.0 \
+  dist/syseba-2.0.0
+docker tag ghcr.io/okno/syseba-packages:2.0.0 \
+  ghcr.io/okno/syseba-packages:latest
+```
+
+The `org.opencontainers.image.source` label associates the package with this
+repository. Publish only after `sha256sum -c SHA256SUMS` succeeds.
+
+Extract without running the image:
+
+```bash
+container=$(docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true)
+docker cp "$container:/packages" ./syseba-packages
+docker rm "$container"
+```
+
 ## Linux Portable Bundle
 
 The executable is cross-compiled against a glibc 2.17 ABI target. The bundle
