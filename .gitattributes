@@ -18,6 +18,8 @@ packaging/oci/* text eol=lf
 *.md text eol=lf
 *.js text eol=lf
 *.html text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
 packaging/debian/* text eol=lf
 
 *.ps1 text eol=crlf

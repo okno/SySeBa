@@ -1,0 +1,116 @@
+name: Publish release package to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        default: "2.0.0"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: syseba-ghcr-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish SySeBa ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/syseba-packages
+
+    steps:
+      - name: Validate version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Check out packaging metadata
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Download and verify release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="dist/syseba-$VERSION"
+          mkdir -p "$release_dir"
+          gh release download "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$release_dir"
+
+          (
+            cd "$release_dir"
+            sha256sum -c SHA256SUMS
+
+            expected=(
+              "release-manifest.txt"
+              "SHA256SUMS"
+              "syseba-$VERSION-1.x86_64.rpm"
+              "syseba_${VERSION}_amd64.deb"
+              "syseba-$VERSION-linux-x86_64.tar.gz"
+              "SySeBa-$VERSION-macos-universal.dmg"
+              "syseba-$VERSION-source.tar.gz"
+              "SySeBa-$VERSION-windows-x86_64-setup.exe"
+              "SySeBa-$VERSION-windows-x86_64.zip"
+            )
+
+            for artifact in "${expected[@]}"; do
+              test -s "$artifact" || {
+                echo "Missing or empty release artifact: $artifact" >&2
+                exit 1
+              }
+            done
+
+            test "$(find . -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+          )
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Build and publish versioned package
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="dist/syseba-$VERSION"
+          revision="$(awk -F= '$1 == "source_commit" { print $2 }' \
+            "$release_dir/release-manifest.txt")"
+          test -n "$revision"
+
+          docker build \
+            --file packaging/oci/Dockerfile.packages \
+            --build-arg "SYSEBA_VERSION=$VERSION" \
+            --build-arg "SYSEBA_REVISION=$revision" \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:latest" \
+            "$release_dir"
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"
+
+      - name: Publish summary
+        shell: bash
+        run: |
+          {
+            echo "## SySeBa GitHub Package"
+            echo
+            echo "- Image: \`$IMAGE:$VERSION\`"
+            echo "- Alias: \`$IMAGE:latest\`"
+            echo "- Release: \`v$VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"

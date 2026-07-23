@@ -42,6 +42,11 @@ docker tag ghcr.io/okno/syseba-packages:2.0.0 \
 The `org.opencontainers.image.source` label associates the package with this
 repository. Publish only after `sha256sum -c SHA256SUMS` succeeds.
 
+The manual `.github/workflows/publish-packages.yml` workflow performs this
+operation with the repository-scoped `GITHUB_TOKEN`. It downloads the selected
+GitHub Release, validates the version, verifies every checksum and expected
+filename, and publishes both the immutable version tag and `latest`.
+
 Extract without running the image:
 
 ```bash
