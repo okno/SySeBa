@@ -1,0 +1,59 @@
+#!/bin/sh
+set -e
+
+CONFIG=/etc/syseba/syseba.conf
+DEFAULT=/usr/share/syseba/syseba.conf.default
+STATE=/var/lib/syseba
+TOKEN=/etc/syseba/syseba_web.token
+LEGACY=/opt/syseba
+OLD_UNIT=/etc/systemd/system/syseba.service
+UNIT_BACKUP=$STATE/legacy-syseba.service
+
+install -d -m 0750 /etc/syseba "$STATE" /var/log/syseba /run/syseba
+install -d -m 0750 /srv/syseba/source /srv/syseba/backup /srv/syseba/restore
+
+if [ -f "$LEGACY/syseba.py" ] &&
+    [ ! -f "$STATE/.migrated-from-opt" ]; then
+    if [ -f "$LEGACY/syseba.conf" ] &&
+        { [ ! -f "$CONFIG" ] || cmp -s "$CONFIG" "$DEFAULT"; }; then
+        install -m 0640 "$LEGACY/syseba.conf" "$CONFIG"
+    fi
+    if [ ! -f "$STATE/syseba_logs.db" ] &&
+        [ -f "$LEGACY/syseba_logs.db" ]; then
+        cp -p "$LEGACY/syseba_logs.db" "$STATE/syseba_logs.db"
+        [ ! -f "$LEGACY/syseba_logs.db-wal" ] ||
+            cp -p "$LEGACY/syseba_logs.db-wal" "$STATE/syseba_logs.db-wal"
+        [ ! -f "$LEGACY/syseba_logs.db-shm" ] ||
+            cp -p "$LEGACY/syseba_logs.db-shm" "$STATE/syseba_logs.db-shm"
+    fi
+    if [ ! -f "$TOKEN" ] && [ -s "$LEGACY/syseba_web.token" ]; then
+        install -m 0600 "$LEGACY/syseba_web.token" "$TOKEN"
+    fi
+    if [ -f "$OLD_UNIT" ] &&
+        grep -q '/opt/syseba/syseba.py' "$OLD_UNIT"; then
+        cp -p "$OLD_UNIT" "$UNIT_BACKUP"
+        rm -f "$OLD_UNIT"
+    fi
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$STATE/.migrated-from-opt"
+fi
+
+chmod 0600 "$TOKEN" 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl enable syseba.service >/dev/null 2>&1 || true
+    if /usr/bin/syseba config-check --config "$CONFIG" >/dev/null 2>&1; then
+        if ! systemctl restart syseba.service; then
+            if [ -f "$UNIT_BACKUP" ]; then
+                cp -p "$UNIT_BACKUP" "$OLD_UNIT"
+                systemctl daemon-reload
+                systemctl restart syseba.service || true
+            fi
+            echo "SySeBa native failed to start; the legacy unit was restored." >&2
+            exit 1
+        fi
+    else
+        echo "SySeBa installed but not started: validate $CONFIG first." >&2
+    fi
+fi
+rm -f "$STATE/.service-was-active"
+exit 0

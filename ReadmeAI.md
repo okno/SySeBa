@@ -1,791 +1,652 @@
-# SySeBa - Guida operativa completa
+# SySeBa 2 - Manuale completo
 
 ![Logo SySeBa](SySeBa_Logo.webp)
 
-[README rapido in italiano](README.it.md) | [English README](README.md) | [Advanced guide in English](ReadmeAI.en.md)
+[README italiano](README.it.md) | [English README](README.md) |
+[Complete English guide](ReadmeAI.en.md)
 
-Questa guida descrive installazione, configurazione, funzionamento, Web UI,
-console, sicurezza, aggiornamento, rollback, log, diagnosi e ripristino di
-SySeBa. I comandi assumono una macchina Linux con systemd e installazione in
-`/opt/syseba`.
+Questo manuale descrive la versione nativa C11 di SySeBa: architettura,
+installazione, configurazione, CLI, dashboard, Web UI, servizi, logging,
+restore, sicurezza, prestazioni, aggiornamento, rollback e diagnosi.
 
-## 1. Che cosa fa SySeBa
+## 1. Scopo e limiti
 
-SySeBa mantiene una copia continuamente aggiornata di una directory sorgente:
+SySeBa mantiene tre alberi:
 
 ```text
-source  --copia e aggiornamento-->  backup
-source  --eliminazione----------->  backup -> restore
-restore --ripristino------------->  source
+source  --sincronizzazione iniziale/eventi--> backup
+source  --eliminazione---------------------> backup -> restore
+restore --ripristino controllato-----------> source
 ```
 
-All'avvio esegue una scansione iniziale multithread. Successivamente usa
-`watchdog` e inotify per elaborare creazioni, modifiche, spostamenti ed
-eliminazioni in tempo reale.
+- `source` è l'origine autorevole.
+- `backup` è la copia corrente.
+- `restore` conserva gli elementi rimossi dalla sorgente.
 
-Un file eliminato dalla sorgente non viene cancellato definitivamente dal
-backup: viene spostato nell'area restore. In caso di conflitto SySeBa genera un
-nome univoco, così una copia precedente non viene sovrascritta per errore.
+All'avvio, salvo `--no-initial-sync`, SySeBa attraversa ricorsivamente
+`source`, crea le directory mancanti e accoda i file diversi o assenti. Dopo
+la scansione resta in ascolto degli eventi del filesystem.
 
-SySeBa non sostituisce un backup offline, immutabile o remoto. La sorgente, il
-backup e il restore devono risiedere su storage affidabile e devono essere
-inclusi nella strategia generale di disaster recovery.
+SySeBa non è un sostituto di snapshot storage immutabili, backup offline,
+versioning remoto o disaster recovery. Un errore hardware, un account
+amministrativo compromesso o la perdita simultanea dei volumi può coinvolgere
+tutti e tre gli alberi.
 
-## 2. Componenti e percorsi
+## 2. Novità della versione 2
 
-| File o percorso | Scopo |
+- Runtime interamente in C11; Python, `watchdog`, `psutil` e `pip` non sono
+  richiesti.
+- Un singolo eseguibile contiene motore, CLI, dashboard, Web UI e gestione
+  servizio.
+- Watcher inotify e `ReadDirectoryChangesW`, con polling portabile di
+  ripiego.
+- Copie su file temporaneo esclusivo, verifica che la sorgente non cambi
+  durante la lettura, flush e sostituzione atomica della destinazione.
+- Lock di kernel verificabile; il file `.lock` può rimanere sul disco senza
+  indicare che il processo sia attivo.
+- Token Web casuale da 256 bit, file protetto e rifiuto di link simbolici.
+- Migrazione SQLite transazionale, compresa l'aggiunta automatica di `level`.
+- Console e Web UI ridisegnate e responsive.
+- Pacchetti per Linux, Windows e macOS, più archivio sorgente.
+
+## 3. Percorsi predefiniti
+
+### Linux
+
+| Elemento | Percorso |
 |---|---|
-| `/opt/syseba/syseba.py` | Motore, CLI, dashboard console e server Web |
-| `/opt/syseba/syseba_web.js` | Logica e traduzioni della Web UI |
-| `/opt/syseba/syseba.lang` | Etichette IT/EN per console e CLI |
-| `/opt/syseba/syseba.conf` | Configurazione attiva |
-| `/opt/syseba/syseba_logs.db` | Audit SQLite |
-| `/opt/syseba/syseba_web.token` | Token Web persistente, permessi `0600` |
-| `/opt/syseba/syseba.lock` | Lock dell'istanza attiva |
-| `/var/log/syseba.log` | Log applicativo predefinito |
-| `/etc/systemd/system/syseba.service` | Unit systemd generata |
-| `/root/syseba-backups` | Snapshot software creati dalla manutenzione |
+| Eseguibile | `/usr/bin/syseba` oppure `/opt/syseba/syseba` dopo migrazione |
+| Configurazione | `/etc/syseba/syseba.conf` |
+| Database | `/var/lib/syseba/syseba_logs.db` |
+| Token Web | `/etc/syseba/syseba_web.token` |
+| Lock | `/run/syseba/syseba.lock` |
+| Log testuale | `/var/log/syseba/syseba.log` |
+| Unit | `/etc/systemd/system/syseba.service` o unit del pacchetto |
 
-Database, file WAL/SHM, log, lock, token e snapshot sono esclusi da Git.
+Il resolver accetta anche i vecchi percorsi sotto `/opt/syseba`, permettendo
+una migrazione senza cambiare subito la configurazione.
 
-## 3. Requisiti
+### Windows
 
-- Linux con systemd.
-- Python 3.8 o successivo.
-- Moduli Python `watchdog` e `psutil`.
-- Git, GNU tar, coreutils, `flock`, `journalctl` e `sha256sum` per la
-  manutenzione automatica.
-- Permessi di lettura sulla sorgente e di scrittura su backup, restore, log e
-  directory applicativa.
+Lo stato risiede in `C:\ProgramData\SySeBa`: configurazione, database, token,
+lock e log. Il servizio viene registrato come `SySeBa`.
 
-Installazione di base su Debian o Ubuntu:
+### macOS
 
-```bash
-sudo apt update
-sudo apt install -y git python3 python3-pip python3-venv
-```
+| Elemento | Percorso |
+|---|---|
+| Eseguibile | `/usr/local/bin/syseba` |
+| Configurazione/token | `/usr/local/etc/syseba` |
+| Database | `/usr/local/var/lib/syseba` |
+| Lock | `/usr/local/var/run/syseba` |
+| Log | `/usr/local/var/log/syseba` |
+| LaunchDaemon | `/Library/LaunchDaemons/com.okno.syseba.plist` |
 
-## 4. Nuova installazione
+## 4. Configurazione
 
-Clona la release:
-
-```bash
-sudo git clone https://github.com/okno/SySeBa.git /opt/syseba
-sudo python3 -m pip install -r /opt/syseba/requirements.txt
-sudo chmod 750 /opt/syseba/syseba.py /opt/syseba/syseba-maintenance.sh
-```
-
-Se la distribuzione impedisce l'installazione globale con `pip`, installa i
-pacchetti equivalenti forniti dalla distribuzione oppure configura
-esplicitamente un ambiente Python gestito. La unit predefinita usa
-`/usr/bin/python3`.
-
-Prepara le directory:
-
-```bash
-sudo mkdir -p /storage/data /storage/backup /storage/restore
-sudo touch /var/log/syseba.log
-```
-
-Modifica `/opt/syseba/syseba.conf`:
+Formato INI compatibile con la versione storica:
 
 ```ini
 [SETTINGS]
-source = /storage/data
-backup = /storage/backup
-restore = /storage/restore
-log = /var/log/syseba.log
+source = /storage/4TB
+backup = /storage/6TB/Backup
+restore = /storage/6TB/RESTORE
+log = /var/log/syseba/syseba.log
 threads = 5
 ```
 
-Valida prima di avviare:
-
-```bash
-sudo python3 /opt/syseba/syseba.py config-check \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-Installa e avvia il servizio:
-
-```bash
-sudo python3 /opt/syseba/syseba.py service-install \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-sudo systemctl start syseba.service
-```
-
-Verifica:
-
-```bash
-systemctl is-enabled syseba.service
-systemctl status syseba.service --no-pager -l
-systemctl cat syseba.service | grep ExecStart
-ss -lntp | grep ':8765'
-```
-
-## 5. Configurazione
-
-La sezione obbligatoria è `[SETTINGS]`.
-
-| Chiave | Significato | Regole |
+| Chiave | Significato | Vincoli |
 |---|---|---|
-| `source` | Albero originale monitorato | Deve esistere ed essere leggibile |
-| `backup` | Copia sincronizzata corrente | Deve essere scrivibile |
-| `restore` | Archivio degli elementi eliminati | Deve essere scrivibile |
-| `log` | File di log testuale | La directory padre deve essere scrivibile |
-| `threads` | Worker della sincronizzazione iniziale | Intero positivo |
+| `source` | Albero autorevole | Deve esistere ed essere leggibile |
+| `backup` | Copia corrente | Scrivibile, distinta dagli altri alberi |
+| `restore` | Elementi rimossi | Scrivibile, distinta dagli altri alberi |
+| `log` | Log testuale | Directory padre creabile/scrivibile |
+| `threads` | Worker di copia | Intero da `1` a `64` |
 
-I percorsi possono essere assoluti o relativi alla directory del file di
-configurazione. Non devono sovrapporsi: per esempio il backup non deve stare
-dentro la sorgente e il restore non deve stare dentro il backup.
+La validazione rifiuta:
 
-Una quantità elevata di thread non rende automaticamente più veloce il
-processo. Per dischi meccanici sono normalmente adatti `2-5` worker; storage
-SSD o pool veloci possono beneficiare di un valore maggiore. Verifica sempre
-latenza, I/O e carico reale.
+- percorsi vuoti;
+- radice filesystem come albero dati;
+- sovrapposizione o annidamento fra source, backup e restore;
+- log collocato dentro uno degli alberi monitorati;
+- link o percorsi che risolvono fuori dalla radice attesa nelle operazioni di
+  restore;
+- numero di thread fuori intervallo.
 
-Controllo leggibile:
-
-```bash
-sudo python3 /opt/syseba/syseba.py config-check \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-Controllo JSON per automazioni:
+Verifica prima dell'avvio:
 
 ```bash
-sudo python3 /opt/syseba/syseba.py config-check \
-  --config /opt/syseba/syseba.conf \
-  --json
+syseba config-check --config /etc/syseba/syseba.conf --lang it
+syseba config-check --config /etc/syseba/syseba.conf --json
 ```
 
-Le modifiche salvate dalla Web UI vengono validate prima della scrittura. Se
-cambiano percorsi o thread, la pagina mostra `Riavvio necessario`: il watcher
-continua con la configurazione attiva finché il servizio non viene riavviato.
+Una modifica salvata dalla Web UI non cambia i path del processo già attivo.
+La schermata mostra configurazione attiva e salvata; applicare con il pulsante
+di riavvio o con il gestore servizi.
 
-## 6. Servizio e avvio automatico Web
+## 5. Installazione Linux
 
-`service-install` genera e abilita sempre una unit che avvia insieme watcher e
-Web UI:
+### Pacchetto Debian
+
+```bash
+sudo apt install ./syseba_2.0.0_amd64.deb
+sudoedit /etc/syseba/syseba.conf
+sudo syseba config-check --lang it
+sudo systemctl enable --now syseba.service
+```
+
+### Pacchetto RPM
+
+```bash
+sudo rpm -Uvh syseba-2.0.0-1.x86_64.rpm
+sudoedit /etc/syseba/syseba.conf
+sudo syseba config-check --lang it
+sudo systemctl enable --now syseba.service
+```
+
+### Build dal sorgente
+
+Dipendenze Debian/Ubuntu:
+
+```bash
+sudo apt install build-essential cmake ninja-build
+```
+
+Compilazione e test:
+
+```bash
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSYSEBA_BUILD_TESTS=ON \
+  -DSYSEBA_ENABLE_HARDENING=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+sudo cmake --install build
+sudo syseba service-install --config /etc/syseba/syseba.conf --lang it
+```
+
+Le dipendenze runtime SQLite, cJSON e CivetWeb sono vendorizzate e compilate
+nel binario; non occorre installare le relative librerie di sviluppo.
+
+## 6. Installazione Windows 11/Server
+
+1. Estrarre il bundle ZIP o eseguire il setup NSIS.
+2. Aprire PowerShell come amministratore.
+3. Eseguire `.\install-service.ps1`.
+4. Modificare `C:\ProgramData\SySeBa\syseba.conf`.
+5. Riavviare con `Restart-Service SySeBa`.
+
+Comandi utili:
+
+```powershell
+Get-Service SySeBa
+Get-Content C:\ProgramData\SySeBa\syseba.log -Wait -Tail 100
+Get-Content C:\ProgramData\SySeBa\syseba_web.token
+Get-NetTCPConnection -LocalPort 8765 -State Listen
+```
+
+Il servizio usa l'account `LocalSystem`, avvio automatico e un SID di servizio.
+Il token riceve una DACL protetta per SYSTEM, Administrators e proprietario.
+
+## 7. Installazione macOS
+
+Il DMG contiene un eseguibile Universal 2 per Intel x86_64 e Apple Silicon
+arm64:
+
+```bash
+cd /Volumes/SySeBa
+sudo ./install.sh
+```
+
+La release locale non è firmata né notarizzata. Prima di una distribuzione
+pubblica occorrono identità Developer ID, `codesign`, notarizzazione Apple e
+stapling. Per un test manuale controllato può essere necessario autorizzare il
+file dalle impostazioni Privacy e sicurezza.
+
+Log:
+
+```bash
+sudo launchctl print system/com.okno.syseba
+log stream --predicate 'process == "syseba"' --style compact
+tail -F /usr/local/var/log/syseba/syseba.log
+```
+
+## 8. CLI completa
 
 ```text
-/usr/bin/python3 /opt/syseba/syseba.py
-  --silent
-  --web
-  --web-host 0.0.0.0
-  --web-port 8765
-  --lang it
-  --config /opt/syseba/syseba.conf
-  --web-token-file /opt/syseba/syseba_web.token
+syseba [command] [options]
+
+run               watcher, sincronizzazione e dashboard
+status            stato, lock e dischi
+logs              coda del log testuale
+config-check      validazione configurazione
+restore-list      elenco restore
+restore-copy      ripristino non interattivo
+restore-browser   navigazione testuale interattiva
+service-install   installazione/abilitazione servizio
 ```
 
-La riga reale è una singola direttiva `ExecStart`. L'ascolto su `0.0.0.0`
-rende la pagina disponibile sulle interfacce LAN del server. Il servizio viene
-abilitato per `multi-user.target` e riparte automaticamente dopo errori o
-riavvii della macchina.
+Opzioni globali:
 
-Per rigenerare una vecchia unit che contiene soltanto `--silent`:
+| Opzione | Uso |
+|---|---|
+| `--config PATH` | Configurazione alternativa |
+| `--lang it\|en` | Lingua CLI, dashboard e Web |
+| `--silent` | Disabilita la dashboard ANSI |
+| `--web` | Avvia Web UI insieme al watcher |
+| `--web-only` | Solo Web UI, senza watcher |
+| `--web-host ADDRESS` | Bind manuale, default `127.0.0.1` |
+| `--web-port PORT` | Porta, default `8765` |
+| `--web-token TOKEN` | Token esplicito, sconsigliato nella command line |
+| `--web-token-file PATH` | Token persistente |
+| `--no-web-auth` | Consentito solo su indirizzo loopback |
+| `--no-initial-sync` | Salta la scansione iniziale |
+| `--lockfile PATH` | Lock alternativo |
+| `--db-path PATH` | Database alternativo |
+| `--console-refresh SEC` | Frequenza dashboard |
+| `--json` | Output strutturato |
+
+Opzioni restore:
+
+```text
+--path RELATIVO
+--search TESTO
+--page N
+--page-size N
+--sort name|mtime|size
+--direction asc|desc
+--rename
+--overwrite
+```
+
+Esempi:
 
 ```bash
-sudo python3 /opt/syseba/syseba.py service-install \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-sudo systemctl restart syseba.service
+syseba status --json
+syseba logs --lines 500
+syseba restore-list --search fattura --sort mtime --direction desc
+syseba restore-copy --path clienti/fattura.pdf --rename
+syseba restore-browser
 ```
 
-In alternativa, `syseba-maintenance.sh quick-update` migra e verifica la unit
-anche quando il commit installato è già quello più recente.
+## 9. Dashboard console
 
-Porta o indirizzo personalizzati:
+Senza `--silent`, `run` usa una vista adattiva:
 
-```bash
-sudo python3 /opt/syseba/syseba.py service-install \
-  --config /opt/syseba/syseba.conf \
-  --web-host 192.168.1.10 \
-  --web-port 9876 \
-  --lang it
-sudo systemctl restart syseba.service
-```
+- intestazione compatta;
+- stato iniziale, watcher e Web;
+- barre stabili per uso source, backup, restore, CPU e memoria;
+- contatori di eventi, copie, cancellazioni, restore, errori e coda;
+- percorsi e ultime attività;
+- layout ridotto per terminali stretti o bassi.
 
-## 7. Accesso alla Web UI
+Il rendering usa ANSI solo su terminali interattivi. In modalità servizio si
+usa `--silent`; l'output operativo resta nel journal e nel log applicativo.
 
-Apri dal browser:
+## 10. Web UI
+
+Il servizio abilita automaticamente:
 
 ```text
 http://IP_DEL_SERVER:8765
 ```
 
-Mostra il token:
+Recupero token Linux:
 
 ```bash
-sudo cat /opt/syseba/syseba_web.token
-sudo stat -c '%a %U:%G %n' /opt/syseba/syseba_web.token
+sudo cat /etc/syseba/syseba_web.token
 ```
 
-Il token viene generato una sola volta con entropia crittografica, scritto in
-modo atomico, protetto con permessi `0600` e riutilizzato ai riavvii. SySeBa
-rifiuta un token file che sia un link simbolico o non sia un file regolare.
-
-Il browser conserva il token in `sessionStorage`: resta nella sessione della
-scheda e può essere eliminato con `Dimentica token`.
-
-La Web UI offre:
-
-- stato di servizio, PID, uptime, sincronizzazione iniziale e lock;
-- utilizzo dischi, CPU, RAM, thread, coda e contatori della sessione;
-- log filtrabili per testo e livello;
-- confronto fra configurazione attiva e salvata;
-- modifica validata della configurazione e richiesta di riavvio;
-- navigazione restore con breadcrumb, ricerca, ordinamento e paginazione;
-- informazioni, download e ripristino di file o directory;
-- gestione dei conflitti tramite rinomina sicura oppure sovrascrittura
-  esplicita.
-
-Il server HTTP integrato non offre TLS. Limita la porta alla LAN necessaria:
-
-```bash
-sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp
-```
-
-Non pubblicare direttamente `8765` su Internet. Per accesso remoto usa una VPN
-oppure un reverse proxy HTTPS con autenticazione aggiuntiva.
-
-## 8. Avvio manuale e modalità operative
-
-Watcher con dashboard console:
-
-```bash
-sudo python3 /opt/syseba/syseba.py \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-Watcher e Web UI manuale, limitata per impostazione predefinita a localhost:
-
-```bash
-sudo python3 /opt/syseba/syseba.py \
-  --web \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-Web UI senza watcher:
-
-```bash
-sudo python3 /opt/syseba/syseba.py \
-  --web-only \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-Modalità servizio senza dashboard:
-
-```bash
-sudo python3 /opt/syseba/syseba.py \
-  --silent \
-  --web \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-Usa `--no-initial-sync` solo dopo aver valutato il rischio di lasciare il
-backup non allineato. Usa `--no-web-auth` esclusivamente in test isolati.
-
-Il lock `/opt/syseba/syseba.lock` impedisce di avviare due watcher sulla stessa
-installazione. `--web-only` non acquisisce il lock del watcher.
-
-## 9. Dashboard console
-
-La dashboard si adatta a larghezza e altezza del terminale:
-
-- vista completa per terminali ampi;
-- vista compatta quando lo spazio verticale è ridotto;
-- barre stabili per source, backup, restore, CPU e sincronizzazione iniziale;
-- stato, uptime, coda, worker, contatori ed eventi recenti;
-- output senza sequenze colore quando lo standard output non è una TTY o è
-  impostata la variabile `NO_COLOR`.
-
-Non eseguire la dashboard manuale mentre `syseba.service` è attivo. Per
-consultare lo stato senza un secondo watcher usa:
-
-```bash
-sudo python3 /opt/syseba/syseba.py status \
-  --config /opt/syseba/syseba.conf \
-  --lang it
-```
-
-## 10. Lingue
-
-Lingue supportate:
-
-```bash
---lang it
---lang en
-```
-
-La scelta controlla dashboard, comandi CLI, messaggi operativi e Web UI. Il
-servizio conserva la lingua nella propria `ExecStart`.
-
-`syseba.lang` usa il formato:
-
-```text
-CHIAVE;Testo italiano;English text
-```
-
-Le traduzioni Web sono definite in `syseba_web.js`. Dopo una modifica verifica
-che ogni chiave esista in entrambe le lingue ed esegui i test.
-
-## 11. Riferimento CLI
-
-| Comando | Funzione |
-|---|---|
-| `run` | Avvia il watcher; è il comando predefinito |
-| `status` | Mostra stato, lock, PID, percorsi e dischi |
-| `logs --lines N` | Legge le ultime righe del log applicativo |
-| `config-check` | Valida configurazione e percorsi |
-| `restore-list` | Elenca e cerca nell'area restore |
-| `restore-copy --path PATH` | Ripristina un elemento nella sorgente |
-| `service-install` | Genera e abilita la unit Web-enabled |
-
-Opzioni comuni:
-
-| Opzione | Funzione |
-|---|---|
-| `--config PATH` | Configurazione alternativa |
-| `--lang it\|en` | Lingua |
-| `--json` | Risposta JSON |
-| `--silent` | Nessuna dashboard interattiva |
-| `--web` | Web UI insieme al watcher |
-| `--web-only` | Solo amministrazione Web |
-| `--web-host HOST` | Indirizzo di ascolto |
-| `--web-port PORT` | Porta da `1` a `65535` |
-| `--web-token TOKEN` | Token passato direttamente; evitare nella shell |
-| `--web-token-file PATH` | File token persistente |
-| `--no-web-auth` | Disabilita l'autenticazione Web |
-| `--no-initial-sync` | Salta la scansione iniziale |
-
-Esempi:
-
-```bash
-sudo python3 /opt/syseba/syseba.py status --json
-sudo python3 /opt/syseba/syseba.py logs --lines 200
-sudo python3 /opt/syseba/syseba.py restore-list --search report --page-size 100
-sudo python3 /opt/syseba/syseba.py restore-copy \
-  --path documenti/report.pdf \
-  --rename
-```
-
-Senza `--rename` o `--overwrite`, un conflitto nella sorgente interrompe il
-restore. `--rename` sceglie una destinazione libera; `--overwrite` sostituisce
-il file o unisce la directory in modo esplicito.
-
-## 12. API HTTP
-
-La pagina `/`, le risorse statiche e `/api/auth` sono pubblici per consentire
-il form di accesso senza generare tentativi falliti ripetuti. `/api/auth`
-comunica soltanto se il token è richiesto. Tutte le API operative e i download
-richiedono:
+La pagina iniziale e `/api/auth` sono pubblici per mostrare il form di accesso.
+Tutte le API dati richiedono l'header:
 
 ```http
-X-SySeBa-Token: TOKEN
+X-SySeBa-Token: <token>
 ```
 
-È accettato anche `Authorization: Bearer TOKEN`.
+Funzioni:
 
-| Metodo | Endpoint | Funzione |
-|---|---|---|
-| `GET` | `/api/auth` | Indica se l'autenticazione è richiesta |
-| `GET` | `/api/status` | Stato completo |
-| `GET` | `/api/logs?lines=200` | Ultime righe del log |
-| `GET` | `/api/config` | Configurazione salvata |
-| `GET` | `/api/config/state` | Confronto attiva/salvata |
-| `POST` | `/api/config` | Valida e salva configurazione |
-| `GET` | `/api/restore` | Elenco restore paginato |
-| `GET` | `/api/restore/info?path=...` | Dettagli e conflitti |
-| `POST` | `/api/restore` | Ripristino con strategia |
-| `GET` | `/restore/download?path=...` | Download di un file |
-| `POST` | `/api/service/restart` | Richiesta di riavvio systemd |
+- riepilogo salute, uptime, watcher, sincronizzazione e code;
+- CPU, memoria e spazio dei tre alberi;
+- ultimi eventi e log filtrabili;
+- visualizzazione e modifica validata della configurazione;
+- indicazione di configurazione attiva/salvata;
+- ricerca, ordinamento e paginazione restore;
+- dettagli e download di un elemento;
+- restore con strategia `fail`, `rename` o `overwrite`;
+- riavvio controllato del servizio quando il gestore OS lo consente;
+- cambio lingua italiano/inglese.
 
-Esempio:
+Il server integrato è HTTP, non HTTPS. Usarlo su LAN/VPN fidata, limitare la
+porta col firewall e non pubblicarlo direttamente su Internet. Per accesso
+remoto usare un reverse proxy TLS con ulteriore autenticazione.
+
+## 11. Semantica di copia e restore
+
+### Copia
+
+Per ogni file:
+
+1. vengono acquisiti metadati della sorgente;
+2. viene creato un file temporaneo esclusivo accanto alla destinazione;
+3. i byte sono copiati senza seguire link finali;
+4. la sorgente è ricontrollata per dimensione, timestamp e identità;
+5. il contenuto è sincronizzato su disco;
+6. il temporaneo sostituisce atomicamente la destinazione;
+7. la directory padre è sincronizzata dove supportato.
+
+Se la sorgente cambia durante la copia, l'operazione viene ritentata. Un file
+con stessa dimensione ma timestamp diverso viene comunque considerato.
+
+### Eliminazione
+
+Quando un elemento sparisce da `source`, la copia corrispondente viene spostata
+da `backup` a `restore`. Un conflitto produce:
+
+```text
+nome.ext.YYYYMMDD-HHMMSS
+nome.ext.YYYYMMDD-HHMMSS.1
+```
+
+### Ripristino
+
+- `fail`: rifiuta se la destinazione esiste.
+- `rename`: crea `nome.restored-YYYYMMDD-HHMMSS.ext`.
+- `overwrite`: sostituisce il file o unisce una directory compatibile.
+
+Tipi incompatibili fra sorgente restore e destinazione richiedono `rename`.
+Traversal `..`, percorsi assoluti e attraversamento di link fuori radice sono
+rifiutati.
+
+## 12. Logging e database
+
+SySeBa scrive:
+
+1. log testuale leggibile;
+2. tabella SQLite `logs`;
+3. journal/Event Log/Unified Log per il ciclo di vita del servizio.
+
+Schema logico:
+
+```sql
+CREATE TABLE logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT,
+  level TEXT DEFAULT 'INFO',
+  operation TEXT,
+  source_path TEXT,
+  target_path TEXT,
+  additional_info TEXT
+);
+CREATE INDEX idx_logs_timestamp ON logs(timestamp);
+```
+
+Il database usa `WAL`, `synchronous=NORMAL`, busy timeout di 5 secondi e un
+writer dedicato. All'apertura, una transazione `BEGIN IMMEDIATE` crea la tabella
+o aggiunge singolarmente le colonne mancanti. Questo elimina in modo
+permanente l'errore:
+
+```text
+sqlite3.OperationalError: table logs has no column named level
+```
+
+Non cancellare `-wal` e `-shm` mentre SySeBa è attivo.
+
+Monitoraggio Linux:
 
 ```bash
-TOKEN="$(sudo cat /opt/syseba/syseba_web.token)"
-curl -sS \
-  -H "X-SySeBa-Token: ${TOKEN}" \
-  http://127.0.0.1:8765/api/status
+sudo journalctl -fu syseba.service -o short-iso-precise
+sudo tail -n 200 -F /var/log/syseba/syseba.log
+sudo ./scripts/syseba-maintenance.sh follow
 ```
 
-Le richieste JSON hanno dimensione limitata. I percorsi restore vengono
-normalizzati e verificati per impedire traversal e fuga tramite link simbolici.
+## 13. Migrazione dalla vecchia installazione
 
-## 13. Log e audit
-
-Vista combinata consigliata:
-
-```bash
-cd /root
-/root/SySeBa-release/syseba-maintenance.sh logs 200
-```
-
-Segui systemd e log applicativo insieme:
-
-```bash
-/root/SySeBa-release/syseba-maintenance.sh follow
-```
-
-Comandi diretti:
-
-```bash
-journalctl -fu syseba.service -o short-iso-precise
-tail -n 200 -F /var/log/syseba.log
-```
-
-Il journal è la fonte principale per avvio, arresto, eccezioni Python e
-politiche di riavvio. Il file configurato contiene attività applicativa e
-operazioni sui file. L'audit SQLite conserva eventi strutturati con data,
-livello, azione, percorso, dettagli ed esito.
-
-All'avvio `initialize_database()` controlla lo schema e aggiunge le colonne
-mancanti delle versioni precedenti. Questo evita il ciclo
-`table logs has no column named level` senza cancellare la cronologia.
-
-## 14. Aggiornamento automatico sicuro
-
-Mantieni una copia separata dello strumento di manutenzione:
+Usare un checkout separato dall'installazione attiva:
 
 ```bash
 cd /root
 git clone https://github.com/okno/SySeBa.git SySeBa-release
-cd /root
-sudo /root/SySeBa-release/syseba-maintenance.sh quick-update
+cd /root/SySeBa-release
+git status --short
+git pull --ff-only origin main
+sudo ./scripts/migrate-from-python.sh
 ```
 
-Non eseguire `git pull` direttamente dentro `/opt/syseba` durante il servizio.
+Lo script:
 
-`quick-update`:
+1. convalida percorsi e privilegi;
+2. compila la sorgente C in una directory temporanea;
+3. esegue unit test e integrazione disponibili;
+4. valida la configurazione esistente;
+5. arresta il servizio;
+6. archivia installazione e stato esterno con ACL/xattr;
+7. genera `SHA256SUMS` e manifest di identità;
+8. conserva config, DB/WAL/SHM, log e token;
+9. effettua uno switch atomico di directory;
+10. scrive una unit systemd irrobustita e abilita Web autostart;
+11. avvia e controlla servizio più `/api/auth`;
+12. esegue rollback automatico se un passaggio post-switch fallisce.
 
-1. confronta identità installata e commit remoto;
-2. scarica in staging e controlla sintassi e dipendenze;
-3. verifica lo spazio disponibile;
-4. ferma il servizio e controlla processi non gestiti;
-5. crea uno snapshot consistente con SHA-256;
-6. preserva configurazione, DB, WAL/SHM, log e token;
-7. valida la configurazione nella release candidata;
-8. sostituisce la directory applicativa;
-9. rigenera e valida la unit con Web UI automatica;
-10. avvia il servizio e verifica che resti attivo;
-11. mostra log recenti e percorso di rollback.
+Gli alberi `source`, `backup` e `restore` non vengono archiviati, spostati,
+cancellati o sostituiti.
 
-Se il commit è già aggiornato, non crea uno snapshot ridondante: verifica
-l'installazione, migra comunque la vecchia unit e riavvia il servizio.
+## 14. Backup software e rollback
 
-Comandi disponibili:
+Snapshot manuale:
 
 ```bash
-sudo /root/SySeBa-release/syseba-maintenance.sh quick-update
-sudo /root/SySeBa-release/syseba-maintenance.sh backup
-sudo /root/SySeBa-release/syseba-maintenance.sh update main
-sudo /root/SySeBa-release/syseba-maintenance.sh verify
-sudo /root/SySeBa-release/syseba-maintenance.sh list
-sudo /root/SySeBa-release/syseba-maintenance.sh logs 200
-sudo /root/SySeBa-release/syseba-maintenance.sh follow
+cd /root
+sudo /root/SySeBa-release/scripts/syseba-maintenance.sh backup
 ```
 
-Lo snapshot predefinito viene creato nella directory corrente:
+Elenco e verifica:
 
-```text
-./syseba-backups/YYYYMMDD-HHMMSS/
+```bash
+sudo ./scripts/syseba-maintenance.sh list
+sudo ./scripts/syseba-maintenance.sh verify
 ```
 
-Avviando lo script da `/root`, il percorso diventa
-`/root/syseba-backups/...`.
+Selettore testuale:
 
-Variabili principali:
+```bash
+sudo ./scripts/syseba-maintenance.sh rollback
+```
 
-| Variabile | Predefinito |
+Scelte dirette:
+
+```bash
+sudo ./scripts/syseba-maintenance.sh rollback latest
+sudo ./scripts/syseba-maintenance.sh rollback pre-update
+sudo ./scripts/syseba-maintenance.sh rollback 20260723-023230
+```
+
+Il rollback verifica checksum e membri tar, mette l'installazione sostituita in
+quarantena, ripristina unit e stato esterno, quindi controlla l'avvio. Se la
+versione scelta non parte, rimette a posto l'installazione pre-rollback.
+
+Quindi sì: lo snapshot `pre-update` riporta esattamente applicazione,
+configurazione, database, token, log e unit allo stato fermo precedente. Non
+può annullare modifiche avvenute nei volumi dati dopo l'aggiornamento, perché
+quei volumi sono deliberatamente esclusi.
+
+## 15. Aggiornamenti futuri
+
+```bash
+cd /root/SySeBa-release
+git status --short
+git pull --ff-only origin main
+sudo ./scripts/syseba-maintenance.sh quick-update main
+```
+
+`quick-update` confronta il commit remoto con `BUILD-INFO`, evita lavoro se
+coincidono e usa lo stesso flusso test/snapshot/health-check/rollback.
+
+## 16. Sicurezza
+
+- Nessun interprete o modulo Python nel runtime.
+- Dipendenze vendorizzate, versionate e riportate nelle note di terze parti.
+- Token minimo 16 caratteri; quello generato contiene 256 bit casuali.
+- Token espliciti con caratteri di controllo o troppo lunghi sono rifiutati.
+- `--no-web-auth` è accettato soltanto su loopback.
+- Body JSON massimo 64 KiB; pagina restore massima 250 elementi.
+- Aperture sensibili rifiutano symlink/reparse point finali.
+- Configurazione e token sono salvati con sostituzione atomica.
+- Lock tramite `flock`/sharing Windows, non mediante sola presenza del file.
+- Unit systemd con `NoNewPrivileges`, filesystem protetto, device privati,
+  famiglie socket limitate, W^X e percorsi scrivibili espliciti.
+- Restore contenuto sotto radici canoniche.
+
+Il processo esegue come root/SYSTEM perché deve poter leggere e ripristinare
+alberi arbitrari. Ridurre i permessi è possibile se tutti i volumi e i file di
+stato appartengono a un account dedicato; testare ACL, mount e restore prima
+di modificare la unit.
+
+Dettagli e threat model: [docs/SECURITY.md](docs/SECURITY.md).
+
+## 17. Prestazioni
+
+`threads` controlla solo i worker di operazioni file. Il writer log e il
+watcher hanno thread separati.
+
+Indicazioni:
+
+| Carico | Valore iniziale |
 |---|---|
-| `SYSEBA_INSTALL_DIR` | `/opt/syseba` |
-| `SYSEBA_BACKUP_ROOT` | `./syseba-backups` |
-| `SYSEBA_REPO_URL` | Repository ufficiale |
-| `SYSEBA_REF` | `main` |
-| `SYSEBA_CONFIG_PATH` | `/opt/syseba/syseba.conf` |
-| `SYSEBA_DB_PATH` | `/opt/syseba/syseba_logs.db` |
-| `SYSEBA_TOKEN_PATH` | `/opt/syseba/syseba_web.token` |
-| `SYSEBA_WEB_HOST` | `0.0.0.0` |
-| `SYSEBA_WEB_PORT` | `8765` |
-| `SYSEBA_LANG` | `it` |
-| `SYSEBA_HEALTH_WAIT` | `3` secondi |
+| HDD singolo | `2-4` |
+| RAID/NAS con latenza | `4-8` |
+| SSD/NVMe | `4-16` |
+| File molto grandi | evitare concorrenza eccessiva |
+| Milioni di file piccoli | aumentare gradualmente e osservare la coda |
 
-Esempio con porta diversa:
+Più thread non garantiscono più throughput: possono aumentare seek, cache
+pressure, traffico di rete e contesa metadata. Usare Web UI/`status --json`
+per confrontare coda, errori, CPU e memoria.
 
-```bash
-sudo env SYSEBA_WEB_PORT=9876 SYSEBA_LANG=it \
-  /root/SySeBa-release/syseba-maintenance.sh quick-update
-```
-
-## 15. Contenuto degli snapshot
-
-Ogni snapshot include:
-
-```text
-manifest.txt
-SHA256SUMS
-syseba-app.tar.gz
-syseba.service
-external-state.tar.gz       se necessario
-external-state.paths        se necessario
-```
-
-`syseba-app.tar.gz` contiene l'intera installazione `/opt/syseba`, esclusi
-lock e cache Python. Se configurazione, token, DB o log sono esterni
-all'installazione, vengono archiviati in `external-state.tar.gz`.
-
-Le directory dati configurate come `source`, `backup` e `restore` non vengono
-mai copiate, cancellate o sostituite dallo strumento di manutenzione.
-
-## 16. Rollback
-
-Menu testuale:
-
-```bash
-cd /root
-sudo /root/SySeBa-release/syseba-maintenance.sh rollback
-```
-
-Il selettore mostra ID, data, motivo, commit, dimensione, stato originario del
-servizio e hash dell'archivio. Nessun file viene modificato prima della
-conferma.
-
-Selezione diretta:
-
-```bash
-sudo /root/SySeBa-release/syseba-maintenance.sh rollback pre-update
-sudo /root/SySeBa-release/syseba-maintenance.sh rollback latest
-sudo /root/SySeBa-release/syseba-maintenance.sh rollback 20260723-023230
-```
-
-Prima del ripristino vengono controllati tutti gli SHA-256. L'installazione
-corrente viene spostata in quarantena, la unit originale viene ripristinata e
-il servizio viene sottoposto a health check.
-
-Se lo snapshot non parte, lo script rimette automaticamente l'installazione
-che era attiva prima del tentativo. La release fallita resta disponibile per
-diagnosi.
-
-Il rollback ripristina esattamente applicazione e stato contenuti in
-`/opt/syseba` al momento dello snapshot, compresi configurazione, database e
-token quando erano in quella directory. Lo stato esterno viene archiviato ma
-non sovrascritto automaticamente, per evitare di sostituire file esterni
-modificati nel frattempo.
-
-## 17. Sicurezza
-
-- Usa il token Web; non passarlo come argomento della shell in produzione.
-- Mantieni `/opt/syseba/syseba_web.token` a `0600`.
-- Limita `8765/tcp` alla LAN o alla VPN necessaria.
-- Non esporre il server HTTP integrato direttamente su Internet.
-- Non usare `--no-web-auth` su reti condivise.
-- Proteggi `/root/syseba-backups`: contiene configurazione e stato operativo.
-- Conserva una copia offline o remota degli snapshot importanti.
-- Verifica periodicamente restore e rollback, non soltanto la creazione.
-- Mantieni Python e dipendenze aggiornati con il gestore del sistema.
-
-La unit generata applica `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`,
-`ProtectHome`, umask `0077` e una lista esplicita di percorsi scrivibili. Se
-usi destinazioni non standard e systemd nega l'accesso, consulta il journal e
-adatta con cautela `ReadWritePaths`.
-
-## 18. Troubleshooting
+## 18. FAQ e troubleshooting
 
 ### La Web UI non risponde
 
 ```bash
 systemctl status syseba.service --no-pager -l
-systemctl cat syseba.service | grep ExecStart
+systemctl cat syseba.service
 ss -lntp | grep ':8765'
-journalctl -u syseba.service -b -n 100 --no-pager
+journalctl -u syseba.service -b -n 150 --no-pager
 ```
 
-`ExecStart` deve contenere `--web`, host, porta e token file. Se contiene solo
-`--silent`, esegui `quick-update` oppure rigenera la unit con
-`service-install`, quindi riavvia.
+La unit deve contenere `--web --web-host 0.0.0.0 --web-port 8765`.
+Controllare firewall e indirizzo server.
 
-### La porta è in ascolto solo su localhost
-
-Controlla che la unit contenga:
-
-```text
---web-host 0.0.0.0
-```
-
-Poi:
+### Il token non funziona
 
 ```bash
-sudo systemctl daemon-reload
+sudo stat /etc/syseba/syseba_web.token
+sudo cat /etc/syseba/syseba_web.token
+```
+
+Rimuovere dalla sessione browser il vecchio token e inserire quello corrente.
+Non sostituire il file con un link simbolico.
+
+### `table logs has no column named level`
+
+Verificare di eseguire il binario 2.x:
+
+```bash
+syseba --version
+systemctl cat syseba.service | grep ExecStart
+```
+
+Arrestare eventuale vecchio processo Python e riavviare il servizio. Il binario
+C migra il database prima di avviare il writer.
+
+### Risulta già in esecuzione
+
+```bash
+syseba status
+systemctl status syseba.service
+```
+
+Non basarsi sul fatto che `.lock` esista: il file persiste intenzionalmente.
+`status` tenta il lock del kernel e riporta la reale proprietà.
+
+### I file non vengono copiati
+
+1. eseguire `config-check`;
+2. controllare permessi e spazio;
+3. leggere log applicativo e journal;
+4. verificare che source, backup e restore non siano annidati;
+5. verificare watcher e dimensione coda nella Web UI.
+
+### Configurazione salvata ma non applicata
+
+```bash
 sudo systemctl restart syseba.service
 ```
 
-### Il token non viene accettato
+La separazione è intenzionale per non cambiare alberi attivi a metà sessione.
 
-```bash
-sudo stat -c '%a %U:%G %n' /opt/syseba/syseba_web.token
-sudo cat /opt/syseba/syseba_web.token
-```
-
-I permessi attesi sono `600`. Premi `Dimentica token` nel browser e inserisci
-il valore corrente. Controlla di non avere spazi o righe aggiuntive.
-
-### Il servizio entra in un ciclo di riavvio
+### Il servizio termina subito
 
 ```bash
 journalctl -u syseba.service -b -n 200 --no-pager
-sudo python3 /opt/syseba/syseba.py config-check \
-  --config /opt/syseba/syseba.conf
+/usr/bin/syseba config-check --config /etc/syseba/syseba.conf
 ```
 
-Verifica dipendenze, permessi, spazio, mount disponibili e sovrapposizione dei
-percorsi.
+Cause tipiche: source assente, permessi, path sovrapposti, porta occupata,
+token non regolare o seconda istanza.
 
-### SQLite segnala `no column named level`
-
-La release corrente migra lo schema prima di avviare il writer:
+### Come raccolgo un report diagnostico
 
 ```bash
-sudo systemctl restart syseba.service
-journalctl -u syseba.service -n 100 --no-pager
+syseba --version
+syseba status --json
+syseba config-check --json
+systemctl status syseba.service --no-pager -l
+journalctl -u syseba.service -b -n 300 --no-pager
 ```
 
-Non cancellare il DB come prima azione. Se l'errore persiste, salva DB, WAL e
-SHM, ferma il servizio e verifica che stia realmente eseguendo il file
-`/opt/syseba/syseba.py` aggiornato.
+Oscurare token e percorsi sensibili prima di condividere l'output.
 
-### Configurazione salvata ma non attiva
+## 19. Build, pacchetti e test
+
+Build di tutti gli artefatti da Linux/WSL:
 
 ```bash
-sudo systemctl restart syseba.service
+./scripts/build-release.sh
 ```
 
-La distinzione è intenzionale: evita che il watcher cambi radice durante
-l'elaborazione degli eventi.
+Da PowerShell:
 
-### Il lock segnala un'altra istanza
+```powershell
+.\scripts\build-release.ps1
+```
+
+Verifica rapida:
 
 ```bash
-systemctl status syseba.service
-cat /opt/syseba/syseba.lock
-ps -fp "$(cat /opt/syseba/syseba.lock)"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+shellcheck scripts/*.sh tests_c/*.sh packaging/**/*.sh
 ```
 
-Non eliminare il lock se il PID è attivo. Se non esiste alcun processo SySeBa,
-il lock obsoleto può essere rimosso a servizio fermo.
+La pipeline locale verifica test nativi, integrazione Linux, manutenzione,
+eseguibile Windows, build macOS per entrambe le architetture, contenuto dei
+pacchetti, compatibilità glibc del bundle Linux e checksum SHA-256.
 
-### Il restore viene rifiutato
+I dettagli sono in:
 
-Controlla che il percorso richiesto sia relativo all'area restore, che non
-attraversi link simbolici esterni e che la sorgente sia scrivibile. In caso di
-destinazione esistente scegli esplicitamente rinomina o sovrascrittura.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/BUILD.md](docs/BUILD.md)
+- [docs/PACKAGING.md](docs/PACKAGING.md)
+- [docs/TESTING.md](docs/TESTING.md)
+- [docs/API.md](docs/API.md)
+- [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- [docs/MIGRATION.md](docs/MIGRATION.md)
+- [docs/SECURITY.md](docs/SECURITY.md)
 
-### L'updater si interrompe
+## 20. Licenze
 
-Leggi il messaggio finale e:
-
-```bash
-sudo /root/SySeBa-release/syseba-maintenance.sh list
-sudo /root/SySeBa-release/syseba-maintenance.sh verify
-sudo /root/SySeBa-release/syseba-maintenance.sh logs 200
-```
-
-Se l'errore avviene dopo lo scambio delle directory, lo script tenta il
-rollback automatico. Non rimuovere le directory `.syseba-*` finché la diagnosi
-non è conclusa.
-
-## 19. FAQ
-
-### Su quale porta funziona la Web UI?
-
-La porta predefinita è `8765`. Con il servizio standard l'indirizzo è
-`http://IP_DEL_SERVER:8765`.
-
-### La Web UI parte automaticamente al boot?
-
-Sì. La unit generata da `service-install` contiene `--web`, è abilitata per
-`multi-user.target` e usa `Restart=always`.
-
-### Posso usare SySeBa soltanto da console?
-
-Sì. Un avvio manuale senza `--web` mostra la dashboard. Il servizio standard
-include comunque la Web UI per l'amministrazione remota locale.
-
-### Posso consultare la Web UI senza avviare il watcher?
-
-Sì, con `--web-only`. Questa modalità è utile per consultazione e gestione,
-ma non sincronizza i file.
-
-### Un aggiornamento modifica i miei dati?
-
-Lo strumento di manutenzione non copia né sostituisce `source`, `backup` e
-`restore`. Durante l'arresto necessario all'aggiornamento, gli eventi verranno
-recuperati dalla sincronizzazione iniziale al riavvio.
-
-### Il rollback torna davvero alla versione precedente?
-
-Sì, se lo snapshot e i checksum sono validi. Ripristina l'intera installazione
-archiviata e la sua unit systemd. La versione sostituita resta in quarantena e,
-se il servizio ripristinato non parte, viene rimessa automaticamente.
-
-### Posso cambiare il token?
-
-Sì. Ferma il servizio, conserva una copia del token corrente, sostituisci il
-file con un valore lungo e casuale, applica `chmod 600` e riavvia. Non usare
-link simbolici.
-
-### Perché il token non è nel repository?
-
-È una credenziale locale. Pubblicarlo in Git permetterebbe a chiunque lo
-conosca di leggere log, modificare la configurazione e richiedere restore.
-
-### I log SQLite crescono nel tempo?
-
-Sì. Pianifica monitoraggio e retention coerenti con lo spazio disponibile e
-con i requisiti di audit. Qualunque manutenzione SQLite deve essere eseguita a
-servizio fermo e dopo uno snapshot.
-
-## 20. Verifica prima della produzione
-
-```bash
-sudo /root/SySeBa-release/syseba-maintenance.sh verify
-sudo systemctl restart syseba.service
-sudo systemctl is-active syseba.service
-ss -lntp | grep ':8765'
-sudo /root/SySeBa-release/syseba-maintenance.sh logs 100
-```
-
-Controlla inoltre:
-
-- accesso Web con token da un host LAN autorizzato;
-- creazione e modifica di un file di prova;
-- eliminazione verso restore;
-- restore con destinazione libera e in conflitto;
-- snapshot manuale e selezione rollback;
-- regole firewall;
-- spazio libero su source, backup, restore e snapshot.
-
-## 21. Test per sviluppatori
-
-```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile syseba.py
-bash -n syseba-maintenance.sh
-```
-
-La suite verifica migrazione SQLite, lock, copie e restore, sicurezza dei
-percorsi, API protette, token persistente, unit systemd, layout console,
-localizzazione e output CLI.
-
-## 22. Licenza e progetto
-
-SySeBa è distribuito con licenza MIT. Consulta [LICENSE](LICENSE).
-
-Repository: [okno/SySeBa](https://github.com/okno/SySeBa)
+SySeBa: MIT. SQLite è di pubblico dominio; cJSON è MIT; CivetWeb è MIT.
+Consultare [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) per versioni,
+provenienza e testi applicabili.

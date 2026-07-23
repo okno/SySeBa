@@ -1,0 +1,44 @@
+[Unit]
+Description=SySeBa - The Syncro Service Backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/syseba run --silent --web --web-host 0.0.0.0 --web-port 8765 --config /etc/syseba/syseba.conf --web-token-file /etc/syseba/syseba_web.token
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=syseba
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ReadWritePaths=/etc/syseba /srv/syseba /var/lib/syseba /var/log/syseba /run/syseba
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallFilter=~@mount @module @reboot @swap @raw-io @debug @cpu-emulation
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

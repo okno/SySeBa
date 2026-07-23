@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.okno.syseba</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/syseba</string>
+    <string>run</string>
+    <string>--silent</string>
+    <string>--web</string>
+    <string>--web-host</string>
+    <string>0.0.0.0</string>
+    <string>--web-port</string>
+    <string>8765</string>
+    <string>--config</string>
+    <string>/usr/local/etc/syseba/syseba.conf</string>
+    <string>--web-token-file</string>
+    <string>/usr/local/etc/syseba/syseba_web.token</string>
+    <string>--db-path</string>
+    <string>/usr/local/var/lib/syseba/syseba_logs.db</string>
+    <string>--lockfile</string>
+    <string>/usr/local/var/run/syseba/syseba.lock</string>
+    <string>--lang</string>
+    <string>it</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/syseba/service.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/syseba/service-error.log</string>
+</dict>
+</plist>

@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SySeBa</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f4;
+      --surface: #ffffff;
+      --surface-strong: #232826;
+      --text: #1b1f1d;
+      --muted: #66706b;
+      --line: #d5dbd8;
+      --accent: #27745f;
+      --accent-2: #8a3f24;
+      --danger: #a61b12;
+      --warn: #8b5a00;
+      --ok: #176b45;
+      --ok-dark: #71e2ae;
+      --danger-dark: #ff938c;
+      --neutral-dark: #f1d27a;
+      --code: #101615;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      background: var(--surface-strong);
+      color: white;
+      border-bottom: 4px solid var(--accent);
+    }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .brand img { width: 44px; height: 44px; object-fit: contain; background: white; border-radius: 6px; }
+    h1 { margin: 0; font-size: 24px; line-height: 1.1; letter-spacing: 0; }
+    .subtitle { color: #cfd8d3; font-size: 13px; margin-top: 4px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 6px;
+      font-size: 13px;
+      background: rgba(255,255,255,.08);
+      white-space: nowrap;
+    }
+    .auth-panel {
+      background: #fff7e6;
+      border-bottom: 1px solid #e7c98a;
+      padding: 14px 24px;
+    }
+    .auth-panel .auth-inner {
+      display: flex;
+      align-items: end;
+      gap: 10px;
+      max-width: 1440px;
+      margin: 0 auto;
+      flex-wrap: wrap;
+    }
+    .auth-panel label { min-width: min(420px, 100%); }
+    main { padding: 22px; max-width: 1440px; margin: 0 auto; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 18px;
+      overflow-x: auto;
+    }
+    .tabs button {
+      border: 0;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      padding: 12px 12px 10px;
+      font: inherit;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .tabs button.active { color: var(--text); border-color: var(--accent); font-weight: 700; }
+    .grid { display: grid; gap: 14px; }
+    .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      min-width: 0;
+    }
+    .panel h2 { margin: 0 0 14px; font-size: 16px; letter-spacing: 0; }
+    .metric-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0; }
+    .metric-value { margin-top: 6px; font-size: 28px; font-weight: 800; line-height: 1; }
+    .metric-small { margin-top: 6px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .bar { height: 9px; background: #e8e2d7; border-radius: 999px; overflow: hidden; margin-top: 10px; }
+    .bar span { display: block; height: 100%; width: 0; background: var(--accent); }
+    .bar.warn span { background: var(--warn); }
+    .bar.danger span { background: var(--danger); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--line); font-size: 14px; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+    code, pre {
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      background: var(--code);
+      color: #e8fff4;
+      border-radius: 6px;
+    }
+    pre { padding: 14px; overflow: auto; max-height: 520px; line-height: 1.45; }
+    label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+      font: inherit;
+      color: var(--text);
+      background: white;
+    }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    button.primary, button.secondary, button.danger {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 13px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.primary { color: white; background: var(--accent); }
+    button.secondary { color: var(--text); background: #e7e0d5; }
+    button.danger { color: white; background: var(--danger); }
+    button:disabled { cursor: not-allowed; opacity: .62; }
+    button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+      outline: 3px solid #d29335;
+      outline-offset: 2px;
+    }
+    .notice { margin-top: 10px; color: var(--accent-2); font-weight: 700; }
+    .hide { display: none !important; }
+    .path { overflow-wrap: anywhere; }
+    .status-ok { color: var(--ok); font-weight: 800; }
+    .pill .status-ok { color: var(--ok-dark); }
+    .status-bad { color: var(--danger); font-weight: 800; }
+    .pill .status-bad { color: var(--danger-dark); }
+    .status-neutral { color: var(--neutral-dark); font-weight: 800; }
+    .restore-row button { padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line); background: white; cursor: pointer; }
+    .section-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    .section-toolbar h2 { margin: 0; }
+    .freshness { color: var(--muted); font-size: 13px; }
+    .restart-banner, .inline-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      border: 1px solid #d9b66d;
+      border-left: 4px solid var(--warn);
+      border-radius: 6px;
+      background: #fff8e8;
+    }
+    .restart-banner strong, .inline-banner strong { display: block; margin-bottom: 3px; }
+    .restart-command { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 20px; margin: 0; }
+    .stats-grid div { display: flex; justify-content: space-between; gap: 12px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    .stats-grid dt { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .stats-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
+    .control-grid { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto auto; gap: 10px; align-items: end; }
+    .compact-label { min-width: 120px; }
+    .check-label { display: inline-flex; grid-template-columns: none; flex-direction: row; align-items: center; gap: 7px; padding: 10px 0; color: var(--text); }
+    .check-label input { width: auto; }
+    .log-view {
+      min-height: 260px;
+      max-height: 540px;
+      overflow: auto;
+      padding: 10px 0;
+      border-radius: 6px;
+      background: var(--code);
+      color: #e8fff4;
+      font: 13px/1.5 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    .log-line { padding: 2px 12px; white-space: pre-wrap; overflow-wrap: anywhere; border-left: 3px solid transparent; }
+    .log-line.warning { color: #ffe19a; border-color: #d9a62e; }
+    .log-line.error, .log-line.critical { color: #ffaaa4; border-color: #ff6f66; }
+    .log-line.info { color: #d7f5e7; }
+    .empty-state { padding: 22px; color: var(--muted); text-align: center; }
+    .config-diff { margin-bottom: 14px; }
+    .config-diff table { margin-top: 8px; }
+    .changed-value { color: var(--accent-2); font-weight: 700; overflow-wrap: anywhere; }
+    .restore-controls { display: grid; grid-template-columns: minmax(180px, 1fr) 160px 130px 110px auto; gap: 10px; align-items: end; }
+    .breadcrumbs { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; min-width: 0; }
+    .breadcrumbs button { border: 0; background: transparent; color: var(--accent); padding: 5px; cursor: pointer; font: inherit; }
+    .breadcrumbs span { color: var(--muted); }
+    .table-scroll { width: 100%; overflow-x: auto; }
+    .restore-row .conflict { color: var(--warn); font-weight: 700; font-size: 12px; }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+    .pagination-info { min-width: 150px; text-align: center; color: var(--muted); font-size: 13px; }
+    dialog { width: min(560px, calc(100% - 32px)); border: 1px solid var(--line); border-radius: 8px; padding: 0; color: var(--text); }
+    dialog::backdrop { background: rgba(16, 22, 21, .55); }
+    .dialog-body { padding: 20px; }
+    .dialog-body h2 { margin: 0 0 12px; font-size: 19px; }
+    .dialog-details { display: grid; gap: 8px; margin: 14px 0; padding: 12px; background: var(--bg); border-radius: 6px; }
+    .dialog-details div { overflow-wrap: anywhere; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 14px 20px; border-top: 1px solid var(--line); }
+    .toast-region { position: fixed; right: 18px; bottom: 18px; z-index: 20; display: grid; gap: 8px; width: min(420px, calc(100% - 36px)); }
+    .toast { padding: 12px 14px; border-radius: 6px; color: white; background: #26322e; box-shadow: 0 8px 24px rgba(0,0,0,.22); }
+    .toast.error { background: #7f1d1d; }
+    .toast.success { background: #145c3b; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 1000px) {
+      .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.cols-3, .form-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .control-grid, .restore-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+    @media (max-width: 700px) {
+      header { padding: 14px 18px; }
+      main { padding: 16px; }
+      .auth-panel { padding: 12px 16px; }
+      .grid.cols-4, .stats-grid, .control-grid, .restore-controls { grid-template-columns: 1fr; }
+      .metric-value { font-size: 24px; }
+      .restart-banner, .inline-banner { align-items: flex-start; flex-direction: column; }
+      .restore-table thead { display: none; }
+      .restore-table, .restore-table tbody, .restore-table tr, .restore-table td { display: block; width: 100%; }
+      .restore-table tr { padding: 10px 0; border-bottom: 1px solid var(--line); }
+      .restore-table td { display: grid; grid-template-columns: minmax(88px, 34%) minmax(0, 1fr); gap: 8px; padding: 5px 4px; border: 0; overflow-wrap: anywhere; }
+      .restore-table td::before { content: attr(data-label); color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+      .restore-table td.actions-cell { display: block; padding-top: 9px; }
+      .restore-table td.actions-cell::before { content: none; }
+      .row-actions button { flex: 1 1 auto; }
+      .pagination { justify-content: space-between; }
+      .pagination-info { min-width: 0; }
+      .toast-region { right: 12px; bottom: 12px; width: calc(100% - 24px); }
+    }
+  </style>
+</head>
+<body data-language="__SYSEBA_LANG__">
+  <header>
+    <div class="brand">
+      <img src="/logo" alt="SySeBa">
+      <div>
+        <h1>SySeBa</h1>
+        <div class="subtitle">Syncro Service Backup</div>
+      </div>
+    </div>
+    <div class="pill" id="runtime-pill" role="status" aria-live="polite" data-i18n="loading_status">Caricamento stato...</div>
+  </header>
+  <section class="auth-panel hide" id="auth-panel" aria-labelledby="auth-title">
+    <form class="auth-inner" id="auth-form">
+      <label id="auth-title"><span data-i18n="web_token">Token web SySeBa</span><input id="auth-token" type="password" autocomplete="current-password" required></label>
+      <button class="primary" id="auth-save" type="submit" data-i18n="sign_in">Accedi</button>
+      <button class="secondary" id="auth-clear" type="button" data-i18n="forget_token">Dimentica token</button>
+      <div class="notice" id="auth-notice" role="alert"></div>
+    </form>
+  </section>
+  <main>
+    <nav class="tabs" role="tablist" aria-label="SySeBa">
+      <button class="active" id="tab-button-status" role="tab" aria-selected="true" aria-controls="tab-status" data-tab="status" data-i18n="status">Stato</button>
+      <button id="tab-button-logs" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="logs" data-i18n="logs">Log</button>
+      <button id="tab-button-config" role="tab" aria-selected="false" aria-controls="tab-config" data-tab="config" data-i18n="configuration">Configurazione</button>
+      <button id="tab-button-restore" role="tab" aria-selected="false" aria-controls="tab-restore" data-tab="restore" data-i18n="restore">Restore</button>
+    </nav>
+
+    <section id="tab-status" class="tab" role="tabpanel" aria-labelledby="tab-button-status" tabindex="0">
+      <div class="section-toolbar">
+        <h2 data-i18n="overview">Panoramica</h2>
+        <div class="freshness" id="last-updated"></div>
+      </div>
+      <div class="restart-banner hide" id="restart-banner">
+        <div>
+          <strong data-i18n="restart_required">Riavvio necessario</strong>
+          <span data-i18n="restart_explanation">La configurazione salvata non è ancora attiva.</span>
+          <div class="restart-command" id="restart-command"></div>
+        </div>
+        <button class="primary hide" type="button" id="restart-service" data-i18n="restart_service">Riavvia servizio</button>
+      </div>
+      <div class="grid cols-4" id="metrics"></div>
+      <div class="grid cols-3" style="margin-top:14px" id="disk"></div>
+      <div class="panel" style="margin-top:14px">
+        <div class="section-toolbar">
+          <h2 data-i18n="session_activity">Attività dalla partenza</h2>
+          <div class="freshness" id="session-started"></div>
+        </div>
+        <dl class="stats-grid" id="activity"></dl>
+      </div>
+    </section>
+
+    <section id="tab-logs" class="tab hide" role="tabpanel" aria-labelledby="tab-button-logs" tabindex="0" hidden>
+      <div class="panel">
+        <div class="section-toolbar">
+          <h2 data-i18n="logs">Log</h2>
+          <div class="freshness" id="logs-meta"></div>
+        </div>
+        <div class="control-grid">
+          <label class="compact-label"><span data-i18n="rows">Righe</span>
+            <select id="log-lines"><option>100</option><option selected>250</option><option>500</option><option>1000</option><option>2000</option></select>
+          </label>
+          <label><span data-i18n="search">Cerca</span><input id="log-search" type="search" data-i18n-placeholder="search_logs" placeholder="Testo nel log"></label>
+          <label class="compact-label"><span data-i18n="level">Livello</span>
+            <select id="log-level"><option value="all" data-i18n="all">Tutti</option><option value="info">INFO</option><option value="warning">WARNING</option><option value="error">ERROR</option></select>
+          </label>
+          <label class="check-label"><input id="log-auto" type="checkbox" checked><span data-i18n="auto_refresh">Aggiorna automaticamente</span></label>
+        </div>
+        <div class="actions">
+          <button class="primary" type="button" id="refresh-logs" data-i18n="refresh">Aggiorna</button>
+          <button class="secondary" type="button" id="copy-logs" data-i18n="copy">Copia</button>
+          <button class="secondary" type="button" id="download-logs" data-i18n="download">Download</button>
+          <label class="check-label"><input id="log-follow" type="checkbox" checked><span data-i18n="follow_tail">Segui ultima riga</span></label>
+        </div>
+        <div id="logs" class="log-view" role="log" aria-label="Log SySeBa" aria-busy="false"></div>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab hide" role="tabpanel" aria-labelledby="tab-button-config" tabindex="0" hidden>
+      <div class="panel">
+        <h2 data-i18n="configuration">Configurazione</h2>
+        <div class="config-diff" id="config-diff"></div>
+        <form id="config-form">
+          <div class="form-grid">
+            <label><span data-i18n="source">Source</span><input name="source" required></label>
+            <label><span data-i18n="backup">Backup</span><input name="backup" required></label>
+            <label><span data-i18n="restore">Restore</span><input name="restore" required></label>
+            <label><span data-i18n="log_file">Log</span><input name="log_file" required></label>
+            <label><span data-i18n="workers">Thread worker</span><input name="threads" type="number" min="1" max="64" required></label>
+          </div>
+          <div class="actions">
+            <button class="primary" type="submit" id="save-config" data-i18n="save_configuration">Salva configurazione</button>
+            <button class="secondary" type="button" id="reload-config" data-i18n="reload">Ricarica</button>
+          </div>
+        </form>
+        <div class="notice" id="config-notice" role="status" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section id="tab-restore" class="tab hide" role="tabpanel" aria-labelledby="tab-button-restore" tabindex="0" hidden>
+      <div class="panel">
+        <div class="section-toolbar">
+          <h2 data-i18n="restore_area">Area restore</h2>
+          <div class="freshness" id="restore-total"></div>
+        </div>
+        <div class="actions">
+          <button class="secondary" type="button" id="restore-up" data-i18n="up">Su</button>
+          <div class="breadcrumbs" id="restore-breadcrumbs" aria-label="Restore"></div>
+        </div>
+        <form class="restore-controls" id="restore-filter">
+          <label><span data-i18n="search">Cerca</span><input id="restore-search" type="search" data-i18n-placeholder="search_folder" placeholder="Cerca nella cartella"></label>
+          <label><span data-i18n="sort_by">Ordina per</span><select id="restore-sort"><option value="name" data-i18n="name">Nome</option><option value="mtime" data-i18n="modified">Modifica</option><option value="size" data-i18n="size">Dimensione</option></select></label>
+          <label><span data-i18n="direction">Direzione</span><select id="restore-direction"><option value="asc" data-i18n="ascending">Crescente</option><option value="desc" data-i18n="descending">Decrescente</option></select></label>
+          <label><span data-i18n="per_page">Per pagina</span><select id="restore-page-size"><option>25</option><option selected>100</option><option>250</option></select></label>
+          <button class="primary" type="submit" data-i18n="apply">Applica</button>
+        </form>
+        <div class="table-scroll">
+          <table class="restore-table" style="margin-top:12px">
+            <thead><tr><th scope="col" data-i18n="name">Nome</th><th scope="col" data-i18n="type">Tipo</th><th scope="col" data-i18n="size">Dimensione</th><th scope="col" data-i18n="modified">Modifica</th><th scope="col" data-i18n="actions">Azioni</th></tr></thead>
+            <tbody id="restore-list"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button class="secondary" type="button" id="restore-prev" data-i18n="previous">Precedente</button>
+          <div class="pagination-info" id="restore-page-info"></div>
+          <button class="secondary" type="button" id="restore-next" data-i18n="next">Successiva</button>
+        </div>
+      </div>
+    </section>
+  </main>
+  <dialog id="restore-dialog" aria-labelledby="restore-dialog-title">
+    <div class="dialog-body">
+      <h2 id="restore-dialog-title" data-i18n="confirm_restore">Conferma ripristino</h2>
+      <div id="restore-dialog-message"></div>
+      <div class="dialog-details" id="restore-dialog-details"></div>
+    </div>
+    <div class="dialog-actions">
+      <button class="secondary" type="button" id="restore-cancel" data-i18n="cancel">Annulla</button>
+      <button class="secondary hide" type="button" id="restore-rename" data-strategy="rename" data-i18n="restore_rename">Ripristina con nuovo nome</button>
+      <button class="danger hide" type="button" id="restore-overwrite" data-strategy="overwrite" data-i18n="restore_overwrite">Sovrascrivi o unisci</button>
+      <button class="primary" type="button" id="restore-confirm" data-strategy="fail" data-i18n="restore_now">Ripristina</button>
+    </div>
+  </dialog>
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="/webui.js" defer></script>
+</body>
+</html>
