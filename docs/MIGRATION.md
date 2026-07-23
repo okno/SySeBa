@@ -1,5 +1,7 @@
 # Migration and Rollback
 
+[Italiano](MIGRATION.it.md) | [Documentation index](README.md)
+
 ## Objective
 
 Migrate an active Python-era installation in `/opt/syseba` to the C runtime
@@ -16,6 +18,10 @@ configured source, backup, or restore trees.
 - Existing configuration passes the new root-overlap rules.
 
 Do not clone into `/opt/syseba`; that directory is the rollback subject.
+
+Use `main` for the native C line. The former Python implementation remains
+available at tag `v1.0.0-python` and branch `legacy/python`; do not switch the
+maintenance checkout to that branch when performing a C migration.
 
 ## Automated Migration
 

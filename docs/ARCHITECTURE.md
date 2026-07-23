@@ -1,5 +1,7 @@
 # Architecture
 
+[Italiano](ARCHITECTURE.it.md) | [Documentation index](README.md)
+
 ## Runtime Topology
 
 SySeBa is one C11 process. The process does not fork workers and does not

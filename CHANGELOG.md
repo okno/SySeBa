@@ -1,5 +1,19 @@
 # Changelog
 
+[Italiano](CHANGELOG.it.md) | [Documentation index](docs/README.md)
+
+## Unreleased
+
+### Documentation and Distribution
+
+- Added complete English/Italian technical documentation and navigation.
+- Published all verified 2.0.0 artifacts in the public, repository-linked
+  `ghcr.io/okno/syseba-packages` OCI package.
+- Added a least-privilege manual GitHub Actions workflow that revalidates a
+  tagged Release before publishing version and `latest` package tags.
+- Documented current package digest, anonymous extraction verification, and
+  unsigned Windows/macOS release status.
+
 ## 2.0.0
 
 ### Added

@@ -1,5 +1,7 @@
 # Security Model
 
+[Italiano](SECURITY.it.md) | [Documentation index](README.md)
+
 ## Scope
 
 This document covers filesystem input, local configuration/state, the built-in
@@ -22,6 +24,11 @@ configured trees are untrusted. HTTP clients are untrusted until their token
 is validated. Git/network release input is untrusted until built and tested;
 current maintenance snapshots are protected by local SHA-256 manifests, not
 by an external signature.
+
+Published binaries are available through GitHub Releases and a public GHCR
+OCI mirror. The OCI mirror is a transport container, not a service runtime.
+Its digest authenticates the registry object fetched from GitHub; the
+enclosed `SHA256SUMS` verifies the individual release payloads.
 
 ## Filesystem Defenses
 
@@ -129,10 +136,21 @@ controlled. Do not place the database under a world-writable directory.
 - Every snapshot has `SHA256SUMS` and identity metadata.
 - Rollback checks hashes and rejects absolute/parent-traversal members.
 - Failed post-install health checks restore the prior application and unit.
+- The GHCR workflow uses repository-scoped `contents: read` and
+  `packages: write` permissions.
+- It downloads an existing tagged Release instead of rebuilding unreviewed
+  branch content.
+- It validates the version syntax, exact expected filenames, non-empty files,
+  and every published SHA-256 before pushing.
+- The only external workflow action is pinned to a full commit SHA.
+- The final OCI carrier uses `scratch`, so it adds no package-manager or shell
+  runtime.
 
 SHA-256 detects local corruption but does not authenticate a malicious local
-administrator. Public releases should add detached signatures, signed Git
-tags, Windows Authenticode, and Apple Developer ID notarization.
+administrator. The current 2.0.0 Git tags are annotated but not
+cryptographically signed. Windows artifacts lack Authenticode, and the macOS
+DMG lacks Developer ID signing/notarization. Future production releases
+should add those controls and detached release signatures.
 
 ## Compiler Hardening
 
@@ -155,7 +173,8 @@ schema migration. ASan and UBSan runs cover the shared Linux code.
 - A privileged actor can change roots or replace intermediate components.
 - Source mutation faster than retry policy may leave an error requiring the
   next event/reconciliation.
-- Unsigned local Windows/macOS artifacts produce platform trust warnings.
+- Published Windows/macOS artifacts are unsigned and can produce platform
+  trust warnings.
 - SySeBa does not make data immutable or protect against physical media loss.
 
 Report suspected vulnerabilities privately before publishing exploit details.

@@ -1,5 +1,7 @@
 # Operations and Observability
 
+[Italiano](OPERATIONS.it.md) | [Documentation index](README.md)
+
 ## Service Control
 
 Linux:
@@ -24,6 +26,13 @@ macOS:
 ```bash
 sudo launchctl print system/com.okno.syseba
 sudo launchctl kickstart -k system/com.okno.syseba
+```
+
+Always record the running version before maintenance:
+
+```bash
+syseba --version
+syseba status --json
 ```
 
 ## Console Logs for a Service

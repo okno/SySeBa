@@ -1,5 +1,7 @@
 # HTTP API
 
+[Italiano](API.it.md) | [Documentation index](README.md)
+
 ## Transport and Authentication
 
 Default service endpoint: `http://SERVER:8765`.
@@ -154,6 +156,7 @@ attachment filename.
 ```http
 POST /api/restore
 Content-Type: application/json
+X-SySeBa-Token: ...
 
 {"path":"documents/report.pdf","strategy":"rename"}
 ```
@@ -177,6 +180,7 @@ An existing destination with `fail` returns HTTP 409 and
 ```http
 POST /api/service/restart
 Content-Type: application/json
+X-SySeBa-Token: ...
 
 {}
 ```
@@ -188,3 +192,14 @@ restart. On systemd, restart is scheduled after the response can be sent.
 
 `GET /`, `/webui.js`, `/logo`, and `/favicon.ico` are embedded assets. They
 are cache-controlled by the server and require no external CDN.
+
+## curl Example
+
+```bash
+token=$(sudo cat /etc/syseba/syseba_web.token)
+curl -fsS \
+  -H "X-SySeBa-Token: $token" \
+  http://127.0.0.1:8765/api/status
+```
+
+Do not place the token in a query string or shared shell logs.

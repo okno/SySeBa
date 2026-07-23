@@ -239,7 +239,8 @@ else()
             WORLD_READ WORLD_EXECUTE)
 endif()
 install(FILES README.md README.it.md ReadmeAI.md ReadmeAI.en.md LICENSE
-        THIRD_PARTY_NOTICES.md CHANGELOG.md SySeBa_Logo.webp
+        THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.it.md
+        CHANGELOG.md CHANGELOG.it.md SySeBa_Logo.webp
         DESTINATION "${CMAKE_INSTALL_DOCDIR}"
         PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
 install(DIRECTORY docs/

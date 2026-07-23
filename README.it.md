@@ -3,7 +3,8 @@
 ![Logo SySeBa](SySeBa_Logo.webp)
 
 [English](README.md) | [Guida completa italiana](ReadmeAI.md) |
-[Complete English guide](ReadmeAI.en.md)
+[Complete English guide](ReadmeAI.en.md) |
+[Documentazione tecnica](docs/README.it.md)
 
 SySeBa è un servizio di backup continuo nativo C11 per Windows, Linux e
 macOS. Esegue una sincronizzazione iniziale parallela, osserva le modifiche
@@ -16,18 +17,23 @@ token, browser di restore e integrazione nativa con i servizi di sistema.
 
 ## Linee di rilascio
 
-- **SySeBa 2.x (C nativo)** e la linea corrente su `main`, con pacchetti per
-  Linux, Windows e macOS.
+- **[SySeBa 2.0.0 (C nativo)](https://github.com/okno/SySeBa/releases/tag/v2.0.0)**
+  è la release pubblicata corrente, con artefatti pronti per Linux, Windows e
+  macOS. Lo sviluppo prosegue su `main`.
 - **SySeBa 1.x (Python Legacy)** rimane disponibile nel ramo
   [`legacy/python`](https://github.com/okno/SySeBa/tree/legacy/python) e nella
   sezione
   [GitHub Releases](https://github.com/okno/SySeBa/releases/tag/v1.0.0-python)
-  per compatibilita e rollback esatto.
+  per compatibilità e rollback esatto.
 
 Entrambe le implementazioni rimangono scaricabili. Le nuove funzioni e il
 supporto di nuove piattaforme riguardano la linea C nativa; la linea Python
 resta disponibile per le installazioni esistenti e per correzioni critiche di
-compatibilita o sicurezza.
+compatibilità o sicurezza.
+
+Il sorgente dei binari 2.0.0 è identificato dal tag `v2.0.0`. Documentazione e
+automazione di pubblicazione possono avanzare su `main` senza modificare gli
+artefatti immutabili della release.
 
 ## Funzioni principali
 
@@ -51,24 +57,31 @@ Scarica le versioni pubblicate da
 [GitHub Releases](https://github.com/okno/SySeBa/releases). Il builder locale
 produce:
 
-| Piattaforma | Artefatto |
+| Piattaforma | File pubblicato |
 |---|---|
-| Linux x86_64 | Bundle portabile `.tar.gz` |
-| Debian/Ubuntu x86_64 | Pacchetto `.deb` |
-| Linux RPM x86_64 | Pacchetto `.rpm` |
-| Windows 11/Server x86_64 | `.zip` portabile e setup NSIS `.exe` |
-| macOS 11+ Intel e Apple Silicon | `.dmg` Universal 2 |
-| Sorgente | `.tar.gz` completo con dipendenze vendorizzate |
+| Linux x86_64 | `syseba-2.0.0-linux-x86_64.tar.gz` |
+| Debian/Ubuntu x86_64 | `syseba_2.0.0_amd64.deb` |
+| Linux RPM x86_64 | `syseba-2.0.0-1.x86_64.rpm` |
+| Windows 11/Server x86_64 | `SySeBa-2.0.0-windows-x86_64.zip` e `SySeBa-2.0.0-windows-x86_64-setup.exe` |
+| macOS 11+ Intel/Apple Silicon | `SySeBa-2.0.0-macos-universal.dmg` |
+| Sorgente | `syseba-2.0.0-source.tar.gz` con dipendenze vendorizzate |
 
 Esegui `scripts/build-release.sh` da Linux/WSL oppure
 `scripts/build-release.ps1` da Windows. Gli artefatti finiscono in `dist/`;
 gli script non pubblicano e non eseguono push.
 
+Ogni release include `SHA256SUMS` e `release-manifest.txt`. Verificali prima
+dell'installazione:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
 ### GitHub Packages
 
 Gli stessi artefatti verificati sono disponibili nel pacchetto OCI
-[`ghcr.io/okno/syseba-packages`](https://github.com/users/okno/packages/container/package/syseba-packages).
-Il contenitore trasporta file statici e non e un servizio da eseguire:
+[`ghcr.io/okno/syseba-packages`](https://github.com/okno/SySeBa/pkgs/container/syseba-packages).
+Il contenitore trasporta file statici e non è un servizio da eseguire:
 
 ```bash
 docker pull ghcr.io/okno/syseba-packages:2.0.0
@@ -79,6 +92,13 @@ docker rm "$container"
 
 Verifica i file estratti con
 `sha256sum -c syseba-packages/SHA256SUMS`.
+Il package pubblico espone i tag `2.0.0` e `latest`, entrambi associati al
+digest
+`sha256:823bfa56d87f2ed3deb817c4483cfe4e5951139e4820bae4a69473f0790173f8`.
+Il workflow manuale
+[`publish-packages.yml`](.github/workflows/publish-packages.yml) scarica la
+GitHub Release, verifica file e hash attesi e pubblica con il `GITHUB_TOKEN`
+limitato alla repository.
 
 ## Installazione Linux
 
@@ -176,18 +196,24 @@ Esegui `syseba --help --lang it` per tutte le opzioni.
 
 ## Documentazione
 
+- [Indice bilingue della documentazione tecnica](docs/README.it.md)
 - [Guida completa italiana](ReadmeAI.md)
 - [Complete English guide](ReadmeAI.en.md)
-- [Architettura](docs/ARCHITECTURE.md)
-- [Build e release](docs/BUILD.md)
-- [Modello di sicurezza](docs/SECURITY.md)
-- [Operatività e osservabilità](docs/OPERATIONS.md)
-- [Migrazione e rollback](docs/MIGRATION.md)
-- [API HTTP](docs/API.md)
-- [Test](docs/TESTING.md)
-- [Packaging](docs/PACKAGING.md)
+- [Architettura](docs/ARCHITECTURE.it.md)
+- [Build e release](docs/BUILD.it.md)
+- [Modello di sicurezza](docs/SECURITY.it.md)
+- [Operatività e osservabilità](docs/OPERATIONS.it.md)
+- [Migrazione e rollback](docs/MIGRATION.it.md)
+- [API HTTP](docs/API.it.md)
+- [Test](docs/TESTING.it.md)
+- [Packaging](docs/PACKAGING.it.md)
+- [Note release 2.0.0](docs/releases/v2.0.0.it.md)
+- [Changelog](CHANGELOG.it.md)
+
+Ogni guida tecnica italiana contiene il collegamento alla versione inglese.
 
 ## Licenza
 
-SySeBa è distribuito con licenza MIT. Consulta [LICENSE](LICENSE) e
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+SySeBa è distribuito con licenza MIT. Consulta [LICENSE](LICENSE),
+[riepilogo italiano delle dipendenze](THIRD_PARTY_NOTICES.it.md) e
+[notice autorevoli](THIRD_PARTY_NOTICES.md).

@@ -1,5 +1,7 @@
 # Packaging
 
+[Italiano](PACKAGING.it.md) | [Documentation index](README.md)
+
 ## Artifact Set
 
 The release directory contains:
@@ -47,12 +49,40 @@ operation with the repository-scoped `GITHUB_TOKEN`. It downloads the selected
 GitHub Release, validates the version, verifies every checksum and expected
 filename, and publishes both the immutable version tag and `latest`.
 
+Current published package:
+
+```text
+page:   https://github.com/okno/SySeBa/pkgs/container/syseba-packages
+image:  ghcr.io/okno/syseba-packages:2.0.0
+alias:  ghcr.io/okno/syseba-packages:latest
+digest: sha256:823bfa56d87f2ed3deb817c4483cfe4e5951139e4820bae4a69473f0790173f8
+```
+
+The package is public and linked to `okno/SySeBa`; anonymous pulls are
+supported. The OCI platform shown by container tools describes the static
+carrier manifest, not the operating systems of the files inside it.
+
 Extract without running the image:
 
 ```bash
 container=$(docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true)
 docker cp "$container:/packages" ./syseba-packages
 docker rm "$container"
+```
+
+PowerShell:
+
+```powershell
+$container = docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true
+docker cp "${container}:/packages" .\syseba-packages
+docker rm $container
+Push-Location .\syseba-packages
+Get-Content .\SHA256SUMS | ForEach-Object {
+    $expected, $file = $_ -split '\s+', 2
+    $actual = (Get-FileHash -LiteralPath $file.Trim() -Algorithm SHA256).Hash
+    if ($actual -ne $expected) { throw "Checksum mismatch: $file" }
+}
+Pop-Location
 ```
 
 ## Linux Portable Bundle
@@ -104,7 +134,8 @@ The NSIS executable installs the same layout. Service registration is
 explicit so configuration can be reviewed before LocalSystem begins watching
 data.
 
-Before public release:
+The published 2.0.0 Windows files are currently unsigned. Before treating
+them as production-trusted binaries:
 
 1. sign `SySeBa.exe` and setup with Authenticode;
 2. timestamp signatures;
@@ -118,8 +149,9 @@ Mach-O, stages config/plist/install scripts, writes an HFS+ image, and
 compresses it as DMG.
 
 Structural verification extracts the DMG and confirms the universal binary.
-Before public release, sign executable and scripts as applicable, notarize the
-DMG, staple the ticket, and test on real Intel and Apple Silicon hosts.
+The published 2.0.0 DMG is unsigned and not notarized. Before production use,
+sign executable and scripts as applicable, notarize the DMG, staple the
+ticket, and test on real Intel and Apple Silicon hosts.
 
 The open-source `libdmg-hfsplus` build tool is external to the distributed
 SySeBa runtime. See its upstream GPLv3 license when reproducing the DMG build.
@@ -139,4 +171,6 @@ sha256sum -c SHA256SUMS
 ```
 
 Local SHA-256 proves transfer integrity against the local manifest. Public
-authenticity requires a detached signature or signed release channel.
+authenticity requires a detached signature or signed release channel. The
+current Git tags are annotated but not cryptographically signed; Windows
+Authenticode and Apple Developer ID signatures are also not yet present.

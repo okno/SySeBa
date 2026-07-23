@@ -1,5 +1,7 @@
 # Build and Release Engineering
 
+[Italiano](BUILD.it.md) | [Documentation index](README.md)
+
 ## Supported Targets
 
 | Target | Compiler/toolchain | Minimum runtime intent |
@@ -96,6 +98,43 @@ Optional environment variables:
 
 The script never invokes `git push`, package upload, or a release API.
 
+## Publication Workflow
+
+Publication is intentionally separated from compilation:
+
+1. tag the tested source and create a GitHub Release;
+2. attach the seven platform/source artifacts, `SHA256SUMS`, and
+   `release-manifest.txt`;
+3. manually dispatch `.github/workflows/publish-packages.yml` with the release
+   version;
+4. let the workflow download the Release, verify checksums and the exact
+   nine-file set, and publish `ghcr.io/okno/syseba-packages`;
+5. verify the public package page, tags, digest, and anonymous pull.
+
+The workflow grants only:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+It uses the repository `GITHUB_TOKEN`; no personal package token is stored as
+a secret. The checkout action is pinned to a full commit SHA. The published
+OCI image is based on `scratch` and carries static files under `/packages`.
+
+Maintainers can dispatch a known release with:
+
+```bash
+gh workflow run publish-packages.yml \
+  --repo okno/SySeBa \
+  --ref main \
+  -f version=2.0.0
+```
+
+The current package is public at
+`ghcr.io/okno/syseba-packages:2.0.0`, also tagged `latest`.
+
 ## Reproducibility Notes
 
 - Source assets are embedded in deterministic path order.
@@ -105,3 +144,6 @@ The script never invokes `git push`, package upload, or a release API.
   output requires a future `SOURCE_DATE_EPOCH` policy across CPack, NSIS, HFS,
   and compression tools.
 - `SHA256SUMS` and `release-manifest.txt` identify every delivered artifact.
+- Re-running the OCI mirror workflow can produce a different container digest
+  if archive layer metadata changes even when payload file hashes remain
+  identical. The release-level `SHA256SUMS` remains the payload authority.

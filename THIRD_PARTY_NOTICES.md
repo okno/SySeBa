@@ -1,5 +1,8 @@
 # Third-Party Notices
 
+[Riepilogo italiano](THIRD_PARTY_NOTICES.it.md) |
+[Documentation index](docs/README.md)
+
 SySeBa includes the following source dependencies in its executable.
 
 ## SQLite 3.53.3

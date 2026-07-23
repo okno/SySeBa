@@ -9,6 +9,33 @@ Questo manuale descrive la versione nativa C11 di SySeBa: architettura,
 installazione, configurazione, CLI, dashboard, Web UI, servizi, logging,
 restore, sicurezza, prestazioni, aggiornamento, rollback e diagnosi.
 
+## Versioni pubblicate e distribuzione
+
+| Linea | Stato | Sorgente | Download |
+|---|---|---|---|
+| SySeBa 2.0.0 C nativo | Corrente | `main`; tag `v2.0.0` per i binari rilasciati | [Release](https://github.com/okno/SySeBa/releases/tag/v2.0.0) |
+| SySeBa 1.0.0 Python | Compatibilità legacy e rollback | `legacy/python`; tag `v1.0.0-python` | [Release legacy](https://github.com/okno/SySeBa/releases/tag/v1.0.0-python) |
+
+Gli artefatti 2.0.0 pronti all'installazione sono disponibili nelle GitHub
+Releases e sono replicati nel package OCI pubblico
+[`ghcr.io/okno/syseba-packages`](https://github.com/okno/SySeBa/pkgs/container/syseba-packages).
+Il package OCI non è il servizio SySeBa: trasporta i nove file della release
+sotto `/packages`.
+
+```bash
+docker pull ghcr.io/okno/syseba-packages:2.0.0
+container=$(docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true)
+docker cp "$container:/packages" ./syseba-packages
+docker rm "$container"
+cd syseba-packages
+sha256sum -c SHA256SUMS
+```
+
+I tag package `2.0.0` e `latest` puntano attualmente al digest
+`sha256:823bfa56d87f2ed3deb817c4483cfe4e5951139e4820bae4a69473f0790173f8`.
+Il workflow della repository scarica la Release con tag, valida tutti i nomi
+e checksum attesi e pubblica usando un `GITHUB_TOKEN` con privilegi limitati.
+
 ## 1. Scopo e limiti
 
 SySeBa mantiene tre alberi:
@@ -198,10 +225,11 @@ cd /Volumes/SySeBa
 sudo ./install.sh
 ```
 
-La release locale non è firmata né notarizzata. Prima di una distribuzione
-pubblica occorrono identità Developer ID, `codesign`, notarizzazione Apple e
-stapling. Per un test manuale controllato può essere necessario autorizzare il
-file dalle impostazioni Privacy e sicurezza.
+Il DMG 2.0.0 pubblicato non è firmato né notarizzato. Per un utilizzo
+produttivo occorrono identità Developer ID, `codesign`, notarizzazione Apple,
+stapling e prove su hardware Intel e Apple Silicon. Per un test manuale
+controllato può essere necessario autorizzare il file dalle impostazioni
+Privacy e sicurezza.
 
 Log:
 
@@ -502,7 +530,7 @@ alberi arbitrari. Ridurre i permessi è possibile se tutti i volumi e i file di
 stato appartengono a un account dedicato; testare ACL, mount e restore prima
 di modificare la unit.
 
-Dettagli e threat model: [docs/SECURITY.md](docs/SECURITY.md).
+Dettagli e threat model: [docs/SECURITY.it.md](docs/SECURITY.it.md).
 
 ## 17. Prestazioni
 
@@ -634,19 +662,31 @@ La pipeline locale verifica test nativi, integrazione Linux, manutenzione,
 eseguibile Windows, build macOS per entrambe le architetture, contenuto dei
 pacchetti, compatibilità glibc del bundle Linux e checksum SHA-256.
 
+Gli script locali terminano intenzionalmente dopo aver creato e verificato
+`dist/syseba-2.0.0`. La pubblicazione è separata:
+
+- GitHub Releases contiene installer e archivi scaricabili direttamente.
+- `.github/workflows/publish-packages.yml` replica una release selezionata in
+  GitHub Packages dopo una seconda verifica di nomi e checksum.
+- L'immagine OCI è basata su `scratch` e non contiene un sistema operativo.
+- Gli eseguibili Windows non sono attualmente firmati; il DMG macOS non è
+  firmato né notarizzato.
+
 I dettagli sono in:
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/BUILD.md](docs/BUILD.md)
-- [docs/PACKAGING.md](docs/PACKAGING.md)
-- [docs/TESTING.md](docs/TESTING.md)
-- [docs/API.md](docs/API.md)
-- [docs/OPERATIONS.md](docs/OPERATIONS.md)
-- [docs/MIGRATION.md](docs/MIGRATION.md)
-- [docs/SECURITY.md](docs/SECURITY.md)
+- [Indice bilingue della documentazione](docs/README.it.md)
+- [Architettura](docs/ARCHITECTURE.it.md)
+- [Build](docs/BUILD.it.md)
+- [Packaging](docs/PACKAGING.it.md)
+- [Test](docs/TESTING.it.md)
+- [API HTTP](docs/API.it.md)
+- [Operatività](docs/OPERATIONS.it.md)
+- [Migrazione](docs/MIGRATION.it.md)
+- [Sicurezza](docs/SECURITY.it.md)
 
 ## 20. Licenze
 
 SySeBa: MIT. SQLite è di pubblico dominio; cJSON è MIT; CivetWeb è MIT.
-Consultare [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) per versioni,
-provenienza e testi applicabili.
+Consultare [THIRD_PARTY_NOTICES.it.md](THIRD_PARTY_NOTICES.it.md) per il
+riepilogo italiano e [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) per
+versioni, provenienza e testi autorevoli.

@@ -1,5 +1,7 @@
 # Testing Strategy
 
+[Italiano](TESTING.it.md) | [Documentation index](README.md)
+
 ## Test Layers
 
 ### Native Unit Tests
@@ -44,6 +46,18 @@ the test reflects concurrent Windows service access.
 manifest/checksum generation, exact selector behavior, malicious archive
 member rejection, and rollback behavior in an isolated fixture.
 
+### Published Package Integration
+
+The manual GitHub Actions workflow downloads the selected GitHub Release and
+fails unless all nine expected assets are present, non-empty, and covered by a
+valid release checksum manifest. After publication, acceptance also requires:
+
+- package visibility is public;
+- package repository link is `okno/SySeBa`;
+- version and `latest` tags resolve to one expected digest;
+- anonymous pull succeeds;
+- all nine files extracted from `/packages` match the Release SHA-256 values.
+
 ## Sanitizers
 
 ASan plus UBSan runs all Linux CTest targets. A discovered heap use-after-free
@@ -72,11 +86,12 @@ passed race test.
 | Binary format | ELF | PE32+ | Universal Mach-O |
 | Package inspect | tar/DEB/RPM | ZIP/NSIS | DMG/HFS extraction |
 | Hash manifest | Required | Required | Required |
+| OCI mirror extraction | Required for every artifact | Required | Required |
 
 macOS functional execution cannot be asserted by a Linux cross-builder. The
 DMG and both Mach-O slices are structurally verified; launchd, filesystem
 watch behavior, Gatekeeper, and restore must be manually tested on Intel and
-Apple Silicon before public release.
+Apple Silicon before the macOS artifact is considered production validated.
 
 ## Manual Regression Checklist
 

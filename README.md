@@ -3,7 +3,8 @@
 ![SySeBa logo](SySeBa_Logo.webp)
 
 [Italiano](README.it.md) | [Complete English guide](ReadmeAI.en.md) |
-[Guida completa italiana](ReadmeAI.md)
+[Guida completa italiana](ReadmeAI.md) |
+[Technical documentation](docs/README.md)
 
 SySeBa is a native C11 continuous backup service for Windows, Linux, and
 macOS. It performs a parallel initial synchronization, watches the source
@@ -16,8 +17,9 @@ token-protected Web UI, restore browser, and native service integration.
 
 ## Release Lines
 
-- **SySeBa 2.x (native C)** is the current line on `main`, with packages for
-  Linux, Windows, and macOS.
+- **[SySeBa 2.0.0 (native C)](https://github.com/okno/SySeBa/releases/tag/v2.0.0)**
+  is the current published release, with ready-to-install artifacts for Linux,
+  Windows, and macOS. Development continues on `main`.
 - **SySeBa 1.x (Python Legacy)** remains available from the
   [`legacy/python`](https://github.com/okno/SySeBa/tree/legacy/python) branch
   and the
@@ -27,6 +29,10 @@ token-protected Web UI, restore browser, and native service integration.
 Both implementations remain downloadable. New platform support and feature
 development target the native C line; the Python line is retained for
 existing installations and critical compatibility or security corrections.
+
+The source used for the 2.0.0 binaries is tagged `v2.0.0`. Documentation and
+package-publication automation may advance on `main` without changing those
+immutable release assets.
 
 ## Highlights
 
@@ -50,23 +56,30 @@ Download published versions from
 [GitHub Releases](https://github.com/okno/SySeBa/releases). The local release
 builder produces:
 
-| Platform | Artifact |
+| Platform | Published file |
 |---|---|
-| Linux x86_64 | Portable `.tar.gz` executable bundle |
-| Debian/Ubuntu x86_64 | `.deb` |
-| RPM Linux x86_64 | `.rpm` |
-| Windows 11/Server x86_64 | Portable `.zip` and NSIS setup `.exe` |
-| macOS 11+ Intel and Apple Silicon | Universal 2 `.dmg` |
-| Source | Reproducible source `.tar.gz` with vendored dependencies |
+| Linux x86_64 | `syseba-2.0.0-linux-x86_64.tar.gz` |
+| Debian/Ubuntu x86_64 | `syseba_2.0.0_amd64.deb` |
+| RPM Linux x86_64 | `syseba-2.0.0-1.x86_64.rpm` |
+| Windows 11/Server x86_64 | `SySeBa-2.0.0-windows-x86_64.zip` and `SySeBa-2.0.0-windows-x86_64-setup.exe` |
+| macOS 11+ Intel/Apple Silicon | `SySeBa-2.0.0-macos-universal.dmg` |
+| Source | `syseba-2.0.0-source.tar.gz` with vendored dependencies |
 
 Run `scripts/build-release.sh` under Linux/WSL, or
 `scripts/build-release.ps1` from Windows. Artifacts are written to `dist/`;
 the scripts never publish or push anything.
 
+Every release includes `SHA256SUMS` and `release-manifest.txt`. Verify them
+before installation:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
 ### GitHub Packages
 
 The same verified artifacts are mirrored in the
-[`ghcr.io/okno/syseba-packages`](https://github.com/users/okno/packages/container/package/syseba-packages)
+[`ghcr.io/okno/syseba-packages`](https://github.com/okno/SySeBa/pkgs/container/syseba-packages)
 OCI package. It is a static artifact carrier, not a runtime container:
 
 ```bash
@@ -77,6 +90,13 @@ docker rm "$container"
 ```
 
 Validate the extracted files with `sha256sum -c syseba-packages/SHA256SUMS`.
+The public package currently exposes `2.0.0` and `latest`; both resolve to
+digest
+`sha256:823bfa56d87f2ed3deb817c4483cfe4e5951139e4820bae4a69473f0790173f8`.
+The manual
+[`publish-packages.yml`](.github/workflows/publish-packages.yml) workflow
+downloads the GitHub Release, verifies all expected files and hashes, and
+publishes it with a repository-scoped `GITHUB_TOKEN`.
 
 ## Linux Install
 
@@ -175,6 +195,7 @@ Run `syseba --help --lang en` for every option.
 
 ## Documentation
 
+- [Bilingual technical documentation index](docs/README.md)
 - [Complete English guide](ReadmeAI.en.md)
 - [Guida completa italiana](ReadmeAI.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -185,6 +206,11 @@ Run `syseba --help --lang en` for every option.
 - [HTTP API](docs/API.md)
 - [Testing](docs/TESTING.md)
 - [Packaging](docs/PACKAGING.md)
+- [2.0.0 release notes](docs/releases/v2.0.0.md)
+- [Changelog](CHANGELOG.md)
+
+Every technical guide has an Italian counterpart linked from the
+documentation index.
 
 ## License
 

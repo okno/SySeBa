@@ -9,6 +9,34 @@ This manual covers the native C11 release of SySeBa: architecture,
 installation, configuration, CLI, dashboard, Web UI, services, logging,
 restore semantics, security, tuning, migration, rollback, and diagnostics.
 
+## Published Versions and Distribution
+
+| Line | Status | Source | Downloads |
+|---|---|---|---|
+| SySeBa 2.0.0 native C | Current | `main`; tag `v2.0.0` for released binaries | [Release](https://github.com/okno/SySeBa/releases/tag/v2.0.0) |
+| SySeBa 1.0.0 Python | Legacy compatibility and rollback | `legacy/python`; tag `v1.0.0-python` | [Legacy release](https://github.com/okno/SySeBa/releases/tag/v1.0.0-python) |
+
+Ready-to-install 2.0.0 artifacts are available in GitHub Releases and are also
+mirrored as the public static OCI package
+[`ghcr.io/okno/syseba-packages`](https://github.com/okno/SySeBa/pkgs/container/syseba-packages).
+The OCI package is not the SySeBa service itself: it carries all nine release
+files below `/packages`.
+
+```bash
+docker pull ghcr.io/okno/syseba-packages:2.0.0
+container=$(docker create ghcr.io/okno/syseba-packages:2.0.0 /bin/true)
+docker cp "$container:/packages" ./syseba-packages
+docker rm "$container"
+cd syseba-packages
+sha256sum -c SHA256SUMS
+```
+
+The `2.0.0` and `latest` package tags currently resolve to
+`sha256:823bfa56d87f2ed3deb817c4483cfe4e5951139e4820bae4a69473f0790173f8`.
+The repository workflow downloads the tagged Release, validates every
+expected filename and checksum, then publishes with a scoped
+`GITHUB_TOKEN`.
+
 ## 1. Purpose and Boundaries
 
 SySeBa maintains three directory trees:
@@ -143,8 +171,9 @@ cd /Volumes/SySeBa
 sudo ./install.sh
 ```
 
-The local verification build is not code-signed or notarized. Public
-distribution requires Developer ID signing, Apple notarization, and stapling.
+The published 2.0.0 DMG is not code-signed or notarized. Production
+distribution should add Developer ID signing, Apple notarization, stapling,
+and execution tests on real Intel and Apple Silicon hardware.
 
 ```bash
 sudo launchctl print system/com.okno.syseba
@@ -422,8 +451,19 @@ The release pipeline checks native tests, Linux integration, maintenance
 rollback behavior, Windows execution, both macOS architectures, package
 contents, Linux glibc compatibility, and SHA-256 manifests.
 
+The local release scripts intentionally stop after creating and validating
+`dist/syseba-2.0.0`. Publication is a separate controlled operation:
+
+- GitHub Releases contains the directly downloadable installers and archives.
+- `.github/workflows/publish-packages.yml` mirrors a selected release to
+  GitHub Packages after repeating filename and checksum validation.
+- The OCI image is `scratch`-based and contains no operating-system runtime.
+- Windows executables are currently unsigned; the macOS DMG is unsigned and
+  not notarized.
+
 Further documentation:
 
+- [Bilingual documentation index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Build](docs/BUILD.md)
 - [Packaging](docs/PACKAGING.md)
